@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/harshith/.local/share/omarchy/aura-cycler-venv/bin/python
 import os
 import sys
 import time
@@ -134,6 +134,72 @@ def fetch_unsplash_wallpapers(count=5):
             except Exception as e:
                 log(f"Failed to download {photo_id}: {e}")
 
+def extract_focal_colors_offline(image_path):
+    """
+    Offline Vision Model:
+    Uses Pillow + NumPy + K-Means clustering in perceptual HLS/Chroma space.
+    Filters out background voids (pure blacks, whites, washed-out grays)
+    and scores clusters by vibrant chromaticity and focal presence.
+    Returns (desktop_accent_hex, keyboard_led_hex).
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+        from sklearn.cluster import KMeans
+        
+        img = Image.open(image_path).convert('RGB')
+        img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+        arr = np.array(img).reshape(-1, 3) / 255.0
+        
+        r, g, b = arr[:, 0], arr[:, 1], arr[:, 2]
+        max_c = np.maximum(np.maximum(r, g), b)
+        min_c = np.minimum(np.minimum(r, g), b)
+        chroma = max_c - min_c
+        lightness = (max_c + min_c) / 2.0
+        
+        # Filter for vibrant focal colors (discard dark blacks, near-whites, and dull grays)
+        mask = (chroma > 0.15) & (lightness > 0.12) & (lightness < 0.92)
+        vibrant_pixels = arr[mask]
+        if len(vibrant_pixels) < 50:
+            mask = (lightness > 0.10) & (lightness < 0.95)
+            vibrant_pixels = arr[mask] if np.any(mask) else arr
+            
+        n_clusters = min(6, len(vibrant_pixels))
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+        kmeans.fit(vibrant_pixels)
+        
+        counts = np.bincount(kmeans.labels_)
+        best_score = -1
+        best_color = kmeans.cluster_centers_[0]
+        
+        for i, center in enumerate(kmeans.cluster_centers_):
+            cr, cg, cb = center
+            c_max = max(cr, cg, cb)
+            c_min = min(cr, cg, cb)
+            c_chroma = c_max - c_min
+            c_light = (c_max + c_min) / 2.0
+            s = c_chroma / (1.0 - abs(2.0 * c_light - 1.0) + 1e-6)
+            
+            # Saliency score: cluster density * saturation^1.4 * chroma^0.8
+            score = (counts[i] ** 0.5) * (s ** 1.4) * (c_chroma ** 0.8)
+            if score > best_score:
+                best_score = score
+                best_color = center
+                
+        r_int = int(best_color[0] * 255)
+        g_int = int(best_color[1] * 255)
+        b_int = int(best_color[2] * 255)
+        accent_hex = f"{r_int:02X}{g_int:02X}{b_int:02X}"
+        
+        # High-chroma LED calibration (S=0.99, L=0.50 for pure ASUS RGB phosphor excitation)
+        h, l, s = colorsys.rgb_to_hls(best_color[0], best_color[1], best_color[2])
+        r_led, g_led, b_led = colorsys.hls_to_rgb(h, 0.50, 0.99)
+        led_hex = f"{int(r_led * 255):02X}{int(g_led * 255):02X}{int(b_led * 255):02X}"
+        return accent_hex, led_hex
+    except Exception as e:
+        log(f"Offline model extraction error: {e}")
+        return None, None
+
 def apply_next_wallpaper():
     wallpapers = collect_local_wallpapers()
     if not wallpapers:
@@ -153,29 +219,53 @@ def apply_next_wallpaper():
 
     log(f"=== Applying New Wallpaper: {os.path.basename(chosen)} ===")
 
-    # 1. Run Aether on-device engine to extract 16 colors and generate entire Omarchy theme
+    # 1. Update Omarchy wallpaper immediately with crossfade IPC
     try:
-        cmd = ["aether", "--generate", chosen, "--no-vscode", "--no-zed"]
+        subprocess.run(["omarchy-theme-bg-set", chosen], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+    except Exception as e:
+        log(f"Wallpaper set error: {e}")
+
+    # 2. Extract true focal colors using the offline vision model
+    focal_accent, focal_led = extract_focal_colors_offline(chosen)
+
+    # 3. Run Aether on-device engine with colorful mode
+    try:
+        cmd = ["aether", "--generate", chosen, "--extract-mode", "colorful", "--no-vscode", "--no-zed"]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
     except Exception as e:
         log(f"Aether generate error: {e}")
-        subprocess.run(["omarchy-theme-bg-set", chosen], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
 
-    # 2. Extract active colors from the newly generated colors.toml
+    # 4. Extract active colors from the newly generated colors.toml and inject our focal accent
     colors_file = os.path.expanduser("~/.config/aether/theme/colors.toml")
-    accent_hex = "00FF66"
+    accent_hex = focal_accent or "00FF66"
     colors_raw = ""
     if os.path.exists(colors_file):
         try:
             with open(colors_file, "r") as f:
                 colors_raw = f.read()
-            m = re.search(r'accent\s*=\s*"#([0-9A-Fa-f]{6})"', colors_raw)
-            if m:
-                accent_hex = m.group(1).upper()
+            if focal_accent:
+                colors_raw = re.sub(r'accent\s*=\s*"#[0-9A-Fa-f]{6}"', f'accent = "#{focal_accent}"', colors_raw)
+                with open(colors_file, "w") as f:
+                    f.write(colors_raw)
+            else:
+                m = re.search(r'accent\s*=\s*"#([0-9A-Fa-f]{6})"', colors_raw)
+                if m:
+                    accent_hex = m.group(1).upper()
         except Exception as e:
             log(f"Read colors error: {e}")
 
-    # 3. Apply theme live to Omarchy shell
+    # Synchronize with Omarchy current theme colors.toml
+    omarchy_colors = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+    if os.path.exists(omarchy_colors) and focal_accent:
+        try:
+            raw = open(omarchy_colors).read()
+            raw = re.sub(r'accent\s*=\s*"#[0-9A-Fa-f]{6}"', f'accent = "#{focal_accent}"', raw)
+            with open(omarchy_colors, "w") as f:
+                f.write(raw)
+        except Exception:
+            pass
+
+    # 5. Apply theme live to Omarchy shell
     if colors_raw:
         try:
             b64 = base64.b64encode(colors_raw.encode()).decode()
@@ -184,32 +274,40 @@ def apply_next_wallpaper():
         except Exception:
             pass
 
-    # 4. Keyboard LED Chroma Boost (Converts hue to 98% saturation for vivid RGB keyboard illumination)
+    # 6. Refresh Hyprland window borders to match the new accent
     try:
-        r = int(accent_hex[0:2], 16) / 255.0
-        g = int(accent_hex[2:4], 16) / 255.0
-        b = int(accent_hex[4:6], 16) / 255.0
-        h, l, s = colorsys.rgb_to_hls(r, g, b)
-        
-        # High-chroma LED calibration
-        r_led, g_led, b_led = colorsys.hls_to_rgb(h, 0.50, 0.98)
-        led_hex = f"{int(r_led * 255):02X}{int(g_led * 255):02X}{int(b_led * 255):02X}"
-        
-        log(f"Theme Accent: #{accent_hex} | ASUS Keyboard Aura LED: #{led_hex}")
-        set_keyboard_color(led_hex)
+        subprocess.run(["omarchy-restart-hyprctl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass
+
+    # 7. ASUS Aura Keyboard Backlight Sync (Physical TUF Chroma match)
+    led_hex = focal_led
+    if not led_hex:
         try:
-            wp_title = os.path.basename(chosen)
-            subprocess.run([
-                "notify-send", "-a", "Aura Cycler",
-                "-h", "string:x-canonical-private-synchronous:aura-cycler-wp",
-                "-i", chosen,
-                "Wallpaper & Keyboard Recolor",
-                f"{wp_title}\nAccent: #{accent_hex}  |  ASUS Aura: #{led_hex}"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            r = int(accent_hex[0:2], 16) / 255.0
+            g = int(accent_hex[2:4], 16) / 255.0
+            b = int(accent_hex[4:6], 16) / 255.0
+            h, l, s = colorsys.rgb_to_hls(r, g, b)
+            r_led, g_led, b_led = colorsys.hls_to_rgb(h, 0.50, 0.99)
+            led_hex = f"{int(r_led * 255):02X}{int(g_led * 255):02X}{int(b_led * 255):02X}"
         except Exception:
-            pass
-    except Exception as e:
-        log(f"Keyboard LED calculation error: {e}")
+            led_hex = "00FF66"
+
+    log(f"Theme Accent: #{accent_hex} | ASUS Keyboard Aura LED: #{led_hex}")
+    set_keyboard_color(led_hex)
+
+    # 8. Synchronized desktop notification
+    try:
+        wp_title = os.path.basename(chosen)
+        subprocess.run([
+            "notify-send", "-a", "Aura Cycler",
+            "-h", "string:x-canonical-private-synchronous:aura-cycler-wp",
+            "-i", chosen,
+            "Wallpaper & Theme Synced",
+            f"{wp_title}\nAccent: #{accent_hex}  |  ASUS Aura: #{led_hex}"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass
 
 def run_loop():
     log("Material Cycler service started.")
