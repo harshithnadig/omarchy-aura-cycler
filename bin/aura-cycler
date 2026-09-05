@@ -16,10 +16,16 @@ CACHE_DIR = os.path.expanduser("~/.local/share/omarchy/dynamic-wallpapers")
 STATE_DIR = os.path.expanduser("~/.local/state/omarchy")
 PID_FILE = os.path.join(STATE_DIR, "material-cycler.pid")
 LOG_FILE = os.path.join(STATE_DIR, "material-cycler.log")
+INTERVAL_FILE = os.path.join(STATE_DIR, "material-cycler-interval.txt")
+BLUR_FILE = os.path.join(STATE_DIR, "glass-blur.txt")
+
 KEY_LOCATIONS = [
     os.path.expanduser("~/.config/aura-cycler/unsplash.key"),
     os.path.expanduser("~/.config/omarchy/unsplash_key"),
 ]
+
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(STATE_DIR, exist_ok=True)
 
 def get_unsplash_key():
     env_key = os.environ.get("UNSPLASH_ACCESS_KEY", "").strip()
@@ -33,9 +39,7 @@ def get_unsplash_key():
                     return k
             except Exception:
                 pass
-INTERVAL_FILE = os.path.join(STATE_DIR, "material-cycler-interval.txt")
-os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(STATE_DIR, exist_ok=True)
+    return ""
 
 def log(msg):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -56,40 +60,135 @@ def get_interval():
                     return val
     except Exception:
         pass
-    return 30  # Default 30s for clean theme transitions
+    return 30
 
 def set_interval(val):
     with open(INTERVAL_FILE, "w") as f:
         f.write(str(val))
     log(f"Interval set to {val}s")
 
+def get_keyboard_brightness():
+    try:
+        res = subprocess.run(["asusctl", "leds", "get"], capture_output=True, text=True, timeout=2)
+        m = re.search(r"brightness:\s*(\w+)", res.stdout, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+    except Exception:
+        pass
+    return None
+
 def set_keyboard_color(hex_code):
     try:
+        lvl = get_keyboard_brightness()
+        if lvl == "off":
+            log("Keyboard backlight is OFF, respecting manual user preference.")
+            return
+
         clean_hex = hex_code.lstrip("#")
         subprocess.run(["asusctl", "aura", "effect", "static", "--colour", clean_hex], 
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        
+        # Verify hardware brightness was not overridden to high
+        after_lvl = get_keyboard_brightness()
+        if lvl and after_lvl and lvl != after_lvl:
+            subprocess.run(["asusctl", "leds", "set", lvl], 
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
     except Exception as e:
         log(f"asusctl aura error: {e}")
 
+# Apple Liquid Glass Blur Controller
+def get_blur():
+    try:
+        if os.path.exists(BLUR_FILE):
+            with open(BLUR_FILE, "r") as f:
+                return int(f.read().strip())
+    except Exception:
+        pass
+    return 12
+
+def set_blur(size):
+    size = max(0, min(30, int(size)))
+    with open(BLUR_FILE, "w") as f:
+        f.write(str(size))
+    passes = 4 if size >= 8 else (3 if size >= 4 else 2)
+    enabled = "true" if size > 0 else "false"
+    cmd = f"hl.config({{ decoration = {{ blur = {{ enabled = {enabled}, size = {size}, passes = {passes} }} }} }})"
+    subprocess.run(["hyprctl", "eval", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pct = min(100, int((size / 24.0) * 100))
+    try:
+        subprocess.run([
+            "notify-send", "-a", "Apple Liquid Glass",
+            "-h", f"int:value:{pct}",
+            "-h", "string:x-canonical-private-synchronous:blur-slider",
+            "Apple Liquid Glass",
+            f"Background Blur: {size}px ({pct}%)"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass
+    print(f"Liquid glass blur set to {size}px ({pct}%).")
+
+def adjust_blur(delta):
+    cur = get_blur()
+    set_blur(cur + delta)
+
+def toggle_blur():
+    cur = get_blur()
+    if cur > 0:
+        set_blur(0)
+    else:
+        set_blur(14)
+
 def collect_local_wallpapers():
     paths = []
-    search_dirs = [
-        CACHE_DIR,
-        os.path.expanduser("~/.config/omarchy/themes")
-    ]
-    for root_dir in search_dirs:
-        if not os.path.exists(root_dir):
-            continue
-        for r, _, files in os.walk(root_dir):
+    # Primary source: dynamic downloaded wallpapers
+    if os.path.exists(CACHE_DIR):
+        for f in os.listdir(CACHE_DIR):
+            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                paths.append(os.path.join(CACHE_DIR, f))
+    # Secondary source: curated custom theme wallpapers
+    themes_dir = os.path.expanduser("~/.config/omarchy/themes")
+    if os.path.exists(themes_dir):
+        for r, _, files in os.walk(themes_dir):
             for f in files:
                 if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
                     paths.append(os.path.join(r, f))
     return list(set(paths))
 
-def fetch_unsplash_wallpapers(count=5):
+def fetch_single_random_unsplash():
+    key = get_unsplash_key()
+    if not key:
+        return None
+    queries = [
+        "wallpapers", "nature", "landscape", "space", "cyberpunk",
+        "anime", "scenery", "minimalist", "neon", "architecture", "japan"
+    ]
+    chosen_topic = random.choice(queries)
+    url = f"https://api.unsplash.com/photos/random?orientation=landscape&query={chosen_topic}"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Omarchy-Aura-Cycler/1.0",
+            "Authorization": f"Client-ID {key}"
+        })
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode())
+            photo_id = data.get("id")
+            img_url = data.get("urls", {}).get("regular") or data.get("urls", {}).get("full")
+            if photo_id and img_url:
+                dest = os.path.join(CACHE_DIR, f"unsplash_{photo_id}.jpg")
+                dl_req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(dl_req, timeout=8) as r_img:
+                    with open(dest, "wb") as f:
+                        f.write(r_img.read())
+                log(f"Streamed random Unsplash wallpaper: unsplash_{photo_id} ({chosen_topic})")
+                return dest
+    except Exception as e:
+        log(f"Unsplash stream error: {e}")
+    return None
+
+def fetch_unsplash_wallpapers(count=4):
+    key = get_unsplash_key()
     topics = ["nature", "landscape", "wallpapers", "cartoons", "cyberpunk", "japan", "scenery"]
     chosen_topic = random.choice(topics)
-    key = get_unsplash_key()
     headers = {"User-Agent": "Omarchy-Aura-Cycler/1.0"}
     if key:
         headers["Authorization"] = f"Client-ID {key}"
@@ -99,28 +198,25 @@ def fetch_unsplash_wallpapers(count=5):
     
     urls_to_download = []
     try:
-        url = f"https://api.unsplash.com/photos/random?count={count}&query={chosen_topic}&orientation=landscape"
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read().decode())
-            if isinstance(data, list):
-                for item in data:
-                    img_url = item.get("urls", {}).get("regular") or item.get("urls", {}).get("full")
-                    if img_url:
-                        urls_to_download.append(("unsplash_" + item["id"], img_url))
-        log(f"Unsplash API returned {len(urls_to_download)} photos successfully.")
-    except Exception as e:
-        log(f"Unsplash API request error: {e}")
-        # Fallback to Wallhaven
-        try:
+        if key:
+            url = f"https://api.unsplash.com/photos/random?count={count}&query={chosen_topic}&orientation=landscape"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read().decode())
+                if isinstance(data, list):
+                    for item in data:
+                        img_url = item.get("urls", {}).get("regular") or item.get("urls", {}).get("full")
+                        if img_url:
+                            urls_to_download.append(("unsplash_" + item["id"], img_url))
+        else:
             wh_url = f"https://wallhaven.cc/api/v1/search?q={urllib.parse.quote(chosen_topic)}&ratios=16x9,16x10"
             req2 = urllib.request.Request(wh_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req2, timeout=5) as resp:
                 d = json.loads(resp.read().decode())
                 for item in d.get("data", [])[:count]:
                     urls_to_download.append(("wallhaven_" + item["id"], item["path"]))
-        except Exception as e2:
-            log(f"Wallhaven fallback error: {e2}")
+    except Exception as e:
+        log(f"Fetch error: {e}")
 
     for photo_id, url in urls_to_download:
         dest = os.path.join(CACHE_DIR, f"{photo_id}.jpg")
@@ -137,15 +233,18 @@ def fetch_unsplash_wallpapers(count=5):
 def extract_focal_colors_offline(image_path):
     """
     Offline Vision Model:
-    Uses Pillow + NumPy + K-Means clustering in perceptual HLS/Chroma space.
-    Filters out background voids (pure blacks, whites, washed-out grays)
-    and scores clusters by vibrant chromaticity and focal presence.
-    Returns (desktop_accent_hex, keyboard_led_hex).
+    Uses Pillow + NumPy + K-Means clustering + Google Material You Monet HCT.
+    Filters background voids (pure blacks, whites, washed-out grays)
+    and scores clusters by chromaticity and focal presence.
+    Returns (accent_hex, led_hex, full_theme_dict).
     """
     try:
         from PIL import Image
         import numpy as np
         from sklearn.cluster import KMeans
+        from materialyoucolor.hct import Hct
+        from materialyoucolor.scheme.scheme_vibrant import SchemeVibrant
+        from materialyoucolor.utils.color_utils import hex_from_argb
         
         img = Image.open(image_path).convert('RGB')
         img.thumbnail((200, 200), Image.Resampling.LANCZOS)
@@ -157,7 +256,7 @@ def extract_focal_colors_offline(image_path):
         chroma = max_c - min_c
         lightness = (max_c + min_c) / 2.0
         
-        # Filter for vibrant focal colors (discard dark blacks, near-whites, and dull grays)
+        # Saliency filter: isolate vibrant focal pixels
         mask = (chroma > 0.15) & (lightness > 0.12) & (lightness < 0.92)
         vibrant_pixels = arr[mask]
         if len(vibrant_pixels) < 50:
@@ -180,7 +279,7 @@ def extract_focal_colors_offline(image_path):
             c_light = (c_max + c_min) / 2.0
             s = c_chroma / (1.0 - abs(2.0 * c_light - 1.0) + 1e-6)
             
-            # Saliency score: cluster density * saturation^1.4 * chroma^0.8
+            # Saliency score: density^0.5 * saturation^1.4 * chroma^0.8
             score = (counts[i] ** 0.5) * (s ** 1.4) * (c_chroma ** 0.8)
             if score > best_score:
                 best_score = score
@@ -191,81 +290,144 @@ def extract_focal_colors_offline(image_path):
         b_int = int(best_color[2] * 255)
         accent_hex = f"{r_int:02X}{g_int:02X}{b_int:02X}"
         
-        # High-chroma LED calibration (S=0.99, L=0.50 for pure ASUS RGB phosphor excitation)
+        # High-chroma LED calibration
         h, l, s = colorsys.rgb_to_hls(best_color[0], best_color[1], best_color[2])
-        r_led, g_led, b_led = colorsys.hls_to_rgb(h, 0.50, 0.99)
+        calibrated_l = max(0.40, min(0.60, l))
+        r_led, g_led, b_led = colorsys.hls_to_rgb(h, calibrated_l, min(0.98, max(0.85, s * 1.25)))
         led_hex = f"{int(r_led * 255):02X}{int(g_led * 255):02X}{int(b_led * 255):02X}"
-        return accent_hex, led_hex
+        
+        # Google Material You Monet full 16-color palette generation
+        argb = (0xFF << 24) | (r_int << 16) | (g_int << 8) | b_int
+        hct = Hct.from_int(argb)
+        scheme = SchemeVibrant(hct, False, 0.0)
+        
+        def hx(c_int):
+            return hex_from_argb(c_int)[:7]
+            
+        p = scheme.primary_palette
+        sc = scheme.secondary_palette
+        t = scheme.tertiary_palette
+        n = scheme.neutral_palette
+        nv = scheme.neutral_variant_palette
+        
+        theme_palette = {
+            'accent': f'#{accent_hex}',
+            'selection': hx(p.tone(30)),
+            'muted': hx(nv.tone(55)),
+            'background': hx(n.tone(6)),
+            'dark_background': hx(n.tone(4)),
+            'darker_background': hx(n.tone(2)),
+            'lighter_background': hx(n.tone(14)),
+            'foreground': hx(n.tone(90)),
+            'dark_foreground': hx(n.tone(70)),
+            'light_foreground': hx(n.tone(95)),
+            'bright_foreground': hx(n.tone(98)),
+            'blue': hx(p.tone(80)),
+            'cyan': hx(sc.tone(80)),
+            'green': hx(t.tone(80)),
+            'yellow': hx(sc.tone(90)),
+            'orange': hx(p.tone(75)),
+            'magenta': hx(t.tone(70)),
+            'red': hx(scheme.error_palette.tone(80)),
+            'bright_red': hx(scheme.error_palette.tone(85)),
+            'bright_green': hx(t.tone(85)),
+            'bright_yellow': hx(sc.tone(95)),
+            'bright_blue': hx(p.tone(85)),
+            'bright_magenta': hx(t.tone(75)),
+            'bright_cyan': hx(sc.tone(85)),
+            'brown': hx(p.tone(45)),
+        }
+        return accent_hex, led_hex, theme_palette
     except Exception as e:
         log(f"Offline model extraction error: {e}")
-        return None, None
+        return None, None, None
+
+def write_colors_toml(path, palette):
+    try:
+        content = f"""# Generated by Material You Monet Vision Model for Omarchy
+mode = "dark"
+
+accent = "{palette.get('accent', '#00FF66')}"
+selection = "{palette.get('selection', '#1C251C')}"
+muted = "{palette.get('muted', '#66696F')}"
+
+background = "{palette.get('background', '#0A0E0A')}"
+dark_background = "{palette.get('dark_background', '#060806')}"
+darker_background = "{palette.get('darker_background', '#030403')}"
+lighter_background = "{palette.get('lighter_background', '#182018')}"
+
+foreground = "{palette.get('foreground', '#E2ECE2')}"
+dark_foreground = "{palette.get('dark_foreground', '#A0ACA0')}"
+light_foreground = "{palette.get('light_foreground', '#ECF6EC')}"
+bright_foreground = "{palette.get('bright_foreground', '#F4FBF4')}"
+
+red = "{palette.get('red', '#FFB4A3')}"
+yellow = "{palette.get('yellow', '#E6E880')}"
+orange = "{palette.get('orange', '#FFB787')}"
+green = "{palette.get('green', '#80E89A')}"
+cyan = "{palette.get('cyan', '#7DE7E8')}"
+blue = "{palette.get('blue', '#80C2FF')}"
+magenta = "{palette.get('magenta', '#E880E8')}"
+brown = "{palette.get('brown', '#8A5E4D')}"
+
+bright_red = "{palette.get('bright_red', '#FFDAD4')}"
+bright_yellow = "{palette.get('bright_yellow', '#FFFFC0')}"
+bright_green = "{palette.get('bright_green', '#A0FFBA')}"
+bright_cyan = "{palette.get('bright_cyan', '#A0FFFF')}"
+bright_blue = "{palette.get('bright_blue', '#A6D5FF')}"
+bright_magenta = "{palette.get('bright_magenta', '#FFA6FF')}"
+"""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+        return content
+    except Exception as e:
+        log(f"Error writing colors.toml to {path}: {e}")
+        return ""
 
 def apply_next_wallpaper():
-    wallpapers = collect_local_wallpapers()
-    if not wallpapers:
-        log("No wallpapers found locally, fetching...")
-        fetch_unsplash_wallpapers(3)
+    chosen = None
+    # 1. Randomly stream fresh wallpaper from Unsplash with 75% probability
+    if random.random() < 0.75:
+        chosen = fetch_single_random_unsplash()
+
+    # If stream didn't run or failed, select randomly from local pool
+    if not chosen:
         wallpapers = collect_local_wallpapers()
+        if not wallpapers:
+            log("No wallpapers found locally, fetching batch...")
+            fetch_unsplash_wallpapers(3)
+            wallpapers = collect_local_wallpapers()
+        if wallpapers:
+            current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
+            current_bg = os.path.realpath(current_bg_link) if os.path.exists(current_bg_link) else ""
+            choices = [w for w in wallpapers if os.path.realpath(w) != current_bg] or wallpapers
+            chosen = random.choice(choices)
 
-    if not wallpapers:
-        log("Still no wallpapers available.")
+    if not chosen:
+        log("No wallpaper available to apply.")
         return
-
-    current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
-    current_bg = os.path.realpath(current_bg_link) if os.path.exists(current_bg_link) else ""
-    
-    choices = [w for w in wallpapers if os.path.realpath(w) != current_bg] or wallpapers
-    chosen = random.choice(choices)
 
     log(f"=== Applying New Wallpaper: {os.path.basename(chosen)} ===")
 
-    # 1. Update Omarchy wallpaper immediately with crossfade IPC
+    # 2. Update Omarchy wallpaper immediately with crossfade IPC
     try:
         subprocess.run(["omarchy-theme-bg-set", chosen], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
     except Exception as e:
         log(f"Wallpaper set error: {e}")
 
-    # 2. Extract true focal colors using the offline vision model
-    focal_accent, focal_led = extract_focal_colors_offline(chosen)
+    # 3. Extract focal colors and complete Material You palette via offline ML model
+    focal_accent, focal_led, palette = extract_focal_colors_offline(chosen)
 
-    # 3. Run Aether on-device engine with colorful mode
-    try:
-        cmd = ["aether", "--generate", chosen, "--extract-mode", "colorful", "--no-vscode", "--no-zed"]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-    except Exception as e:
-        log(f"Aether generate error: {e}")
-
-    # 4. Extract active colors from the newly generated colors.toml and inject our focal accent
-    colors_file = os.path.expanduser("~/.config/aether/theme/colors.toml")
-    accent_hex = focal_accent or "00FF66"
     colors_raw = ""
-    if os.path.exists(colors_file):
-        try:
-            with open(colors_file, "r") as f:
-                colors_raw = f.read()
-            if focal_accent:
-                colors_raw = re.sub(r'accent\s*=\s*"#[0-9A-Fa-f]{6}"', f'accent = "#{focal_accent}"', colors_raw)
-                with open(colors_file, "w") as f:
-                    f.write(colors_raw)
-            else:
-                m = re.search(r'accent\s*=\s*"#([0-9A-Fa-f]{6})"', colors_raw)
-                if m:
-                    accent_hex = m.group(1).upper()
-        except Exception as e:
-            log(f"Read colors error: {e}")
+    accent_hex = focal_accent or "00FF66"
+    if palette:
+        aether_colors = os.path.expanduser("~/.config/aether/theme/colors.toml")
+        omarchy_colors = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+        colors_raw = write_colors_toml(aether_colors, palette)
+        write_colors_toml(omarchy_colors, palette)
 
-    # Synchronize with Omarchy current theme colors.toml
-    omarchy_colors = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
-    if os.path.exists(omarchy_colors) and focal_accent:
-        try:
-            raw = open(omarchy_colors).read()
-            raw = re.sub(r'accent\s*=\s*"#[0-9A-Fa-f]{6}"', f'accent = "#{focal_accent}"', raw)
-            with open(omarchy_colors, "w") as f:
-                f.write(raw)
-        except Exception:
-            pass
-
-    # 5. Apply theme live to Omarchy shell
+    # 4. Apply complete theme live to Omarchy shell
     if colors_raw:
         try:
             b64 = base64.b64encode(colors_raw.encode()).decode()
@@ -274,29 +436,18 @@ def apply_next_wallpaper():
         except Exception:
             pass
 
-    # 6. Refresh Hyprland window borders to match the new accent
+    # 5. Refresh Hyprland window borders to match the new accent
     try:
         subprocess.run(["omarchy-restart-hyprctl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
     except Exception:
         pass
 
-    # 7. ASUS Aura Keyboard Backlight Sync (Physical TUF Chroma match)
-    led_hex = focal_led
-    if not led_hex:
-        try:
-            r = int(accent_hex[0:2], 16) / 255.0
-            g = int(accent_hex[2:4], 16) / 255.0
-            b = int(accent_hex[4:6], 16) / 255.0
-            h, l, s = colorsys.rgb_to_hls(r, g, b)
-            r_led, g_led, b_led = colorsys.hls_to_rgb(h, 0.50, 0.99)
-            led_hex = f"{int(r_led * 255):02X}{int(g_led * 255):02X}{int(b_led * 255):02X}"
-        except Exception:
-            led_hex = "00FF66"
-
+    # 6. ASUS Aura Keyboard Backlight Sync (Maintains user's brightness level)
+    led_hex = focal_led or "00FF66"
     log(f"Theme Accent: #{accent_hex} | ASUS Keyboard Aura LED: #{led_hex}")
     set_keyboard_color(led_hex)
 
-    # 8. Synchronized desktop notification
+    # 7. Send synchronized desktop notification
     try:
         wp_title = os.path.basename(chosen)
         subprocess.run([
@@ -312,6 +463,8 @@ def apply_next_wallpaper():
 def run_loop():
     log("Material Cycler service started.")
     last_fetch = 0
+    # Apply initial blur setting
+    set_blur(get_blur())
     while True:
         try:
             apply_next_wallpaper()
@@ -319,7 +472,7 @@ def run_loop():
             if now - last_fetch > 600:
                 last_fetch = now
                 try:
-                    fetch_unsplash_wallpapers(4)
+                    fetch_unsplash_wallpapers(3)
                 except Exception:
                     pass
         except Exception as e:
@@ -396,9 +549,12 @@ def status_daemon():
     if res.returncode == 0:
         print(f"● material-cycler.service is active (running, interval {get_interval()}s)")
         print(f"  Available wallpaper pool: {len(wallpapers)} wallpapers")
+        print(f"  Current background blur: {get_blur()}px")
+        print(f"  Keyboard backlight brightness: {get_keyboard_brightness()}")
     else:
         print(f"○ material-cycler.service is inactive (stopped).")
         print(f"  Available wallpaper pool: {len(wallpapers)} wallpapers")
+        print(f"  Current background blur: {get_blur()}px")
 
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else "start"
@@ -426,7 +582,19 @@ if __name__ == "__main__":
             print(f"Cycle interval updated to {sys.argv[2]} seconds.")
         else:
             print(f"Current interval: {get_interval()} seconds. Usage: material-cycler interval <seconds>")
+    elif action == "blur":
+        sub = sys.argv[2] if len(sys.argv) > 2 else "get"
+        if sub == "up":
+            adjust_blur(+3)
+        elif sub == "down":
+            adjust_blur(-3)
+        elif sub == "toggle":
+            toggle_blur()
+        elif sub.isdigit():
+            set_blur(int(sub))
+        else:
+            print(f"Current glass blur: {get_blur()}px. Usage: material-cycler blur [up|down|toggle|<size>]")
     elif action == "fetch":
         fetch_unsplash_wallpapers(10)
     else:
-        print("Usage: material-cycler {start|stop|toggle|restart|status|next|cycle-interval|interval <sec>|fetch}")
+        print("Usage: material-cycler {start|stop|toggle|restart|status|next|cycle-interval|interval <sec>|blur [up|down|<px>]|fetch}")

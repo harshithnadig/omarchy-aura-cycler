@@ -13,6 +13,7 @@ BarWidget {
 
   property bool active: true
   property int intervalSec: 30
+  property int blurPx: 12
   property string currentAccent: "#00FF66"
   property string currentWallpaper: ""
 
@@ -43,7 +44,7 @@ BarWidget {
 
   Process {
     id: stateProc
-    command: ["sh", "-c", "python3 -c '\nimport os, re, subprocess\nrunning = subprocess.run([\"systemctl\", \"--user\", \"is-active\", \"--quiet\", \"material-cycler.service\"]).returncode == 0\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\ninterval = 30\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\n\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-30:]\n    for l in reversed(lines):\n        m = re.search(r\"Theme Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying New Wallpaper: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).replace(\"===\", \"\").strip()\nprint(f\"{running}|{interval}|{accent}|{wp}\")\n'"]
+    command: ["sh", "-c", "python3 -c '\nimport os, re, subprocess\nrunning = subprocess.run([\"systemctl\", \"--user\", \"is-active\", \"--quiet\", \"material-cycler.service\"]).returncode == 0\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\ninterval = 30\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\nblur_file = os.path.expanduser(\"~/.local/state/omarchy/glass-blur.txt\")\nblur = 12\nif os.path.exists(blur_file):\n    try: blur = int(open(blur_file).read().strip())\n    except: pass\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-30:]\n    for l in reversed(lines):\n        m = re.search(r\"Theme Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying New Wallpaper: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).replace(\"===\", \"\").strip()\nprint(f\"{running}|{interval}|{accent}|{wp}|{blur}\")\n'"]
     stdout: SplitParser {
       onRead: function(data) {
         var parts = data.trim().split("|")
@@ -52,6 +53,7 @@ BarWidget {
           root.intervalSec = parseInt(parts[1]) || 30
           root.currentAccent = parts[2] || "#00FF66"
           root.currentWallpaper = parts[3] || ""
+          if (parts.length >= 5) root.blurPx = parseInt(parts[4]) || 12
         }
       }
     }
@@ -86,14 +88,18 @@ BarWidget {
     useActiveColor: true
     active: root.active
     activeColor: root.currentAccent
-    tooltipText: "Aura Material Cycler: " + (root.active ? "Active" : "Paused")
+    tooltipText: "Apple Liquid Glass & Aura Cycler: " + (root.active ? "Active" : "Paused")
       + "\n• Rotation: " + root.intervalSec + "s"
+      + "\n• Liquid Glass Blur: " + root.blurPx + "px"
       + "\n• Wallpaper: " + (root.currentWallpaper ? root.currentWallpaper : "Active")
-      + "\n• Theme & LED: " + root.currentAccent
+      + "\n• Monet Accent: " + root.currentAccent
       + "\n\n⌨ Keyboard Shortcuts (Mouse-Free):"
       + "\n  • Super + B: Next Wallpaper & Sync"
       + "\n  • Super + Alt + P: Pause / Resume"
       + "\n  • Super + Alt + I: Cycle Speed (" + root.intervalSec + "s)"
+      + "\n  • Super + Shift + [: Blur Slider Down (-3px)"
+      + "\n  • Super + Shift + ]: Blur Slider Up (+3px)"
+      + "\n  • Super + Alt + B: Toggle Blur On/Off"
       + "\n\nMouse (Optional): Left click=Next | Right click=Toggle"
 
     onPressed: function(b) {
