@@ -12,7 +12,7 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   property bool active: false
-  property int intervalSec: 10
+  property int intervalSec: 30
   property string currentAccent: "#00FF66"
   property string currentWallpaper: ""
 
@@ -35,7 +35,7 @@ BarWidget {
   Component.onCompleted: refreshState()
 
   Timer {
-    interval: 3000
+    interval: 4000
     running: true
     repeat: true
     onTriggered: root.refreshState()
@@ -43,14 +43,14 @@ BarWidget {
 
   Process {
     id: stateProc
-    command: ["sh", "-c", "python3 -c '\nimport os, re\npid_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.pid\")\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\nrunning = False\nif os.path.exists(pid_file):\n    try:\n        pid = int(open(pid_file).read().strip())\n        os.kill(pid, 0)\n        running = True\n    except:\n        pass\ninterval = 10\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\n\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-20:]\n    for l in reversed(lines):\n        m = re.search(r\"Material You Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).strip()\nprint(f\"{running}|{interval}|{accent}|{wp}\")\n'"]
+    command: ["sh", "-c", "python3 -c '\nimport os, re, subprocess\nrunning = subprocess.run([\"systemctl\", \"--user\", \"is-active\", \"--quiet\", \"material-cycler.service\"]).returncode == 0\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\ninterval = 30\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\n\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-25:]\n    for l in reversed(lines):\n        m = re.search(r\"Theme Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying New Wallpaper: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).replace(\"===\", \"\").strip()\nprint(f\"{running}|{interval}|{accent}|{wp}\")\n'"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var parts = text.trim().split("|")
         if (parts.length >= 4) {
           root.active = parts[0] === "True"
-          root.intervalSec = parseInt(parts[1]) || 10
+          root.intervalSec = parseInt(parts[1]) || 30
           root.currentAccent = parts[2] || "#00FF66"
           root.currentWallpaper = parts[3] || ""
         }
@@ -66,13 +66,13 @@ BarWidget {
 
   Process {
     id: toggleProc
-    command: ["sh", "-c", "if [ -f ~/.local/state/omarchy/material-cycler.pid ]; then material-cycler stop; else material-cycler start; fi"]
+    command: ["sh", "-c", "if systemctl --user is-active --quiet material-cycler.service; then systemctl --user stop material-cycler.service; else systemctl --user start material-cycler.service; fi"]
     onExited: root.refreshState()
   }
 
   Process {
     id: speedProc
-    command: ["sh", "-c", "python3 -c '\nimport os\ncur = 10\nf = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\nif os.path.exists(f):\n    try: cur = int(open(f).read().strip())\n    except: pass\nsteps = [10, 30, 60, 300, 600]\nnext_val = steps[(steps.index(cur) + 1) % len(steps)] if cur in steps else 10\nos.system(f\"material-cycler interval {next_val}\")\n'"]
+    command: ["sh", "-c", "python3 -c '\nimport os\ncur = 30\nf = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\nif os.path.exists(f):\n    try: cur = int(open(f).read().strip())\n    except: pass\nsteps = [15, 30, 60, 300, 600]\nnext_val = steps[(steps.index(cur) + 1) % len(steps)] if cur in steps else 30\nos.system(f\"material-cycler interval {next_val}\")\n'"]
     onExited: root.refreshState()
   }
 
@@ -100,10 +100,10 @@ BarWidget {
       else if (b === Qt.MiddleButton) root.cycleSpeed()
     }
     onWheelMoved: function(delta) {
-      var steps = [10, 30, 60, 300, 600]
+      var steps = [15, 30, 60, 300, 600]
       var cur = root.intervalSec
       var idx = steps.indexOf(cur)
-      if (idx === -1) idx = 0
+      if (idx === -1) idx = 1
       var nextIdx = delta > 0 ? Math.min(steps.length - 1, idx + 1) : Math.max(0, idx - 1)
       if (nextIdx !== idx) {
         root.bar.run("material-cycler interval " + steps[nextIdx])
