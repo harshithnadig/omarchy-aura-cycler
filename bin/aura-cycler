@@ -436,9 +436,10 @@ def apply_next_wallpaper():
         except Exception:
             pass
 
-    # 5. Refresh Hyprland window borders to match the new accent
+    # 5. Refresh Hyprland window borders to match the new accent (instant eval, zero freeze)
     try:
-        subprocess.run(["omarchy-restart-hyprctl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        border_cmd = f"hl.config({{ general = {{ col = {{ active_border = 'rgba({accent_hex.lower()}dd)' }} }} }})"
+        subprocess.run(["hyprctl", "eval", border_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
     except Exception:
         pass
 
