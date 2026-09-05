@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "harshith.aura-cycler",
+  "name": "Aura Material Cycler",
+  "version": "1.0.0",
+  "author": "harshith",
+  "license": "MIT",
+  "description": "Live wallpaper cycler with Material You adaptive palette extraction, Omarchy shell recoloring, and ASUS Aura keyboard backlight synchronization.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Aura Cycler",
+    "description": "Dynamic Material You wallpaper, Omarchy color, and ASUS Aura sync",
+    "category": "Appearance",
+    "defaultSection": "right"
+  }
+}
