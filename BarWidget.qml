@@ -11,7 +11,7 @@ BarWidget {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  property bool active: false
+  property bool active: true
   property int intervalSec: 30
   property string currentAccent: "#00FF66"
   property string currentWallpaper: ""
@@ -35,7 +35,7 @@ BarWidget {
   Component.onCompleted: refreshState()
 
   Timer {
-    interval: 4000
+    interval: 3000
     running: true
     repeat: true
     onTriggered: root.refreshState()
@@ -43,13 +43,12 @@ BarWidget {
 
   Process {
     id: stateProc
-    command: ["sh", "-c", "python3 -c '\nimport os, re, subprocess\nrunning = subprocess.run([\"systemctl\", \"--user\", \"is-active\", \"--quiet\", \"material-cycler.service\"]).returncode == 0\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\ninterval = 30\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\n\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-25:]\n    for l in reversed(lines):\n        m = re.search(r\"Theme Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying New Wallpaper: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).replace(\"===\", \"\").strip()\nprint(f\"{running}|{interval}|{accent}|{wp}\")\n'"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var parts = text.trim().split("|")
+    command: ["sh", "-c", "python3 -c '\nimport os, re, subprocess\nrunning = subprocess.run([\"systemctl\", \"--user\", \"is-active\", \"--quiet\", \"material-cycler.service\"]).returncode == 0\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\ninterval = 30\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\n\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-30:]\n    for l in reversed(lines):\n        m = re.search(r\"Theme Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying New Wallpaper: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).replace(\"===\", \"\").strip()\nprint(f\"{running}|{interval}|{accent}|{wp}\")\n'"]
+    stdout: SplitParser {
+      onRead: function(data) {
+        var parts = data.trim().split("|")
         if (parts.length >= 4) {
-          root.active = parts[0] === "True"
+          root.active = (parts[0] === "True")
           root.intervalSec = parseInt(parts[1]) || 30
           root.currentAccent = parts[2] || "#00FF66"
           root.currentWallpaper = parts[3] || ""
@@ -80,19 +79,22 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "\uf53f"
+    text: "󰸉"
     fontFamily: "JetBrainsMono Nerd Font"
+    fontSize: 16
     horizontalMargin: 8
     useActiveColor: true
     active: root.active
     activeColor: root.currentAccent
-    tooltipText: "Aura Material Cycler (" + (root.active ? "Running" : "Paused") + ")"
-      + "\n• Interval: " + root.intervalSec + "s"
+    tooltipText: "Aura Material Cycler: " + (root.active ? "Active" : "Paused")
+      + "\n• Rotation: " + root.intervalSec + "s"
       + "\n• Wallpaper: " + (root.currentWallpaper ? root.currentWallpaper : "Active")
-      + "\n• Accent: " + root.currentAccent
-      + "\n\nLeft click: Next wallpaper & sync"
-      + "\nRight click: Toggle start / pause"
-      + "\nMiddle click: Cycle interval (" + root.intervalSec + "s)"
+      + "\n• Theme & LED: " + root.currentAccent
+      + "\n\n⌨ Keyboard Shortcuts (Mouse-Free):"
+      + "\n  • Super + B: Next Wallpaper & Sync"
+      + "\n  • Super + Alt + P: Pause / Resume"
+      + "\n  • Super + Alt + I: Cycle Speed (" + root.intervalSec + "s)"
+      + "\n\nMouse (Optional): Left click=Next | Right click=Toggle"
 
     onPressed: function(b) {
       if (b === Qt.LeftButton) root.nextWallpaper()

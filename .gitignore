@@ -1,0 +1,7 @@
+*.key
+*.token
+*.env
+*secret*
+*credential*
+__pycache__/
+*.pyc
