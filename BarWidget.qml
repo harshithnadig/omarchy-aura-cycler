@@ -24,6 +24,17 @@ BarWidget {
   property int weatherTemp: 22
   property string weatherCondition: "Light Drizzle"
   property bool weatherSync: true
+  property string gpuGuardLevel: "unavailable"
+  property bool gpuGuardAutoProtect: false
+  property bool gpuGuardAuraPaused: false
+  property string gpuGuardName: "GPU unavailable"
+  property string gpuGuardError: ""
+  property int gpuVramUsedMib: 0
+  property int gpuVramTotalMib: 0
+  property real gpuVramPercent: 0
+  property int gpuTemperatureC: 0
+  property int gpuUtilizationPercent: 0
+  property var gpuProcesses: []
 
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
 
@@ -73,6 +84,10 @@ BarWidget {
     if (!speedProc.running) speedProc.running = true
   }
 
+  function toggleGpuProtection() {
+    if (!guardProc.running) guardProc.running = true
+  }
+
   Timer {
     interval: 3000
     running: true
@@ -104,6 +119,20 @@ BarWidget {
             root.weatherIcon = d.weather.icon
           }
           root.weatherSync = d.weather_sync
+          var guard = d.gpu_guard || {}
+          root.gpuGuardLevel = guard.level || "unavailable"
+          root.gpuGuardAutoProtect = guard.auto_protect || false
+          root.gpuGuardAuraPaused = guard.aura_paused || false
+          root.gpuProcesses = guard.processes || []
+          root.gpuGuardError = guard.metrics && guard.metrics.error ? guard.metrics.error : ""
+          if (guard.metrics && guard.metrics.available) {
+            root.gpuGuardName = guard.metrics.name || "GPU"
+            root.gpuVramUsedMib = guard.metrics.used_mib || 0
+            root.gpuVramTotalMib = guard.metrics.total_mib || 0
+            root.gpuVramPercent = guard.metrics.vram_percent || 0
+            root.gpuTemperatureC = guard.metrics.temperature_c || 0
+            root.gpuUtilizationPercent = guard.metrics.utilization_percent || 0
+          }
         } catch(e) {}
       }
     }
@@ -127,6 +156,12 @@ BarWidget {
     onExited: root.refreshState()
   }
 
+  Process {
+    id: guardProc
+    command: [root.cliPath, "gpu-guard", "toggle-protect"]
+    onExited: root.refreshState()
+  }
+
   WidgetButton {
     id: button
     anchors.fill: parent
@@ -145,6 +180,10 @@ BarWidget {
       + "\n• Liquid Glass Blur: " + root.blurPx + "px"
       + "\n• Active Wallpaper: " + (root.currentWallpaper ? root.currentWallpaper : "Active")
       + "\n• Monet Accent: " + root.currentAccent
+      + "\n• GPU Guard: " + root.gpuGuardLevel.toUpperCase()
+      + (root.gpuGuardLevel === "unavailable" ? " (" + root.gpuGuardError + ")" : " • VRAM " + root.gpuVramPercent + "% • Temp " + root.gpuTemperatureC + "°C")
+      + "\n• Auto-Protect: " + (root.gpuGuardAutoProtect ? "Enabled" : "Off")
+      + (root.gpuGuardAuraPaused ? "\n• Aura Guard paused rotation for protection" : "")
       + "\n\nLeft Click: Open Settings Panel (Folders, Timeout, Weather, Blur)"
       + "\nRight Click: Pause / Resume"
       + "\nMiddle Click: Cycle Speed (" + root.intervalSec + "s)"

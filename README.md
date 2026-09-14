@@ -3,7 +3,7 @@
 [![Omarchy Plugin](https://img.shields.io/badge/omarchy-plugin-blue)](https://omarchy.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An intelligent dynamic wallpaper engine, Material You on-device theme generator, real-time outdoor weather synchronizer, and ASUS Aura RGB keyboard backlight synchronizer for [Omarchy Linux](https://omarchy.org).
+An intelligent dynamic wallpaper engine, Material You on-device theme generator, real-time outdoor weather synchronizer, ASUS Aura RGB keyboard backlight synchronizer, and GPU-aware performance guard for [Omarchy Linux](https://omarchy.org).
 
 ![Aura Material Cycler](preview.png)
 
@@ -23,6 +23,7 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
 - **Live Weather-Adaptive Atmosphere**: Automatically queries real-time outdoor weather conditions (via Open-Meteo) and streams matching wallpapers and screen effects.
 - **Aether On-Device Material You Theme Engine**: Automatically analyzes active wallpapers using local Pillow + K-Means + Google Material You Monet HCT, generating a full palette and dynamically restyling the **entire Omarchy desktop** (top bar, window borders, menus, Chrome browser policies, Alacritty, Kitty, Ghostty, Foot, VS Code, Obsidian, and Helix). Palette results are cached by image path and modification time.
 - **ASUS Aura Keyboard Backlight Sync**: Synchronizes the wallpaper's primary accent hue directly to your ASUS laptop keyboard using `asusctl` static mode, while strictly respecting manual user brightness levels.
+- **GPU-aware Performance Guard**: Shows VRAM, utilization, temperature, and compute workloads in the same panel. Optional Auto-Protect pauses only an already-active Aura service during critical GPU pressure and resumes it only when Aura performed the pause.
 - **Interactive Settings Panel (`Panel.qml`)**:
   - Live outdoor weather card with real-time temperature, condition icon, and weather-adaptive toggle.
   - Dedicated Atmospheric Weather Effects card with toggle, mode selector pills (`Auto`, `Rain`, `Thunder`, `Snow`, `Sun`, `Stars`, `Mist`), layer placement button (`Wallpaper` vs `Over Windows`), and intensity cycle (`Subtle`, `Normal`, `Dramatic`).
@@ -85,6 +86,8 @@ PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycl
 "$PLUGIN_DIR/bin/aura-cycler" blur 12               # Set glass blur intensity (0 to 24px)
 "$PLUGIN_DIR/bin/aura-cycler" keyboard off          # Turn keyboard LEDs off (disables sync writes)
 "$PLUGIN_DIR/bin/aura-cycler" keyboard allow        # Re-enable keyboard sync writes
+"$PLUGIN_DIR/bin/aura-cycler" gpu-guard status      # Read GPU pressure and compute workloads
+"$PLUGIN_DIR/bin/aura-cycler" gpu-guard toggle-protect # Toggle opt-in Aura Auto-Protect
 "$PLUGIN_DIR/bin/aura-cycler" status                # View current service, weather, and folder status
 "$PLUGIN_DIR/bin/aura-cycler" status-json           # Export complete machine-readable state JSON
 ```

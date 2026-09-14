@@ -16,6 +16,7 @@ import random
 import signal
 import subprocess
 import re
+import csv
 import hashlib
 import urllib.request
 import urllib.parse
@@ -24,6 +25,7 @@ import fcntl
 import shutil
 import tempfile
 import warnings
+from contextlib import contextmanager
 warnings.simplefilter("ignore")
 
 # Keep image analysis from competing aggressively with local inference or the
@@ -45,6 +47,7 @@ NEXT_THEME_DIR = os.path.join(STATE_DIR, "current", "next-theme")
 THEME_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "omarchy-theme-set.lock")
 KEYBOARD_LOCK_FILE = os.path.join(STATE_DIR, "keyboard-color.lock")
 DAEMON_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "aura-cycler.lock")
+GPU_GUARD_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "aura-cycler-gpu-guard.lock")
 WALLHAVEN_KEY_FILE = os.path.expanduser("~/.config/aura-cycler/wallhaven.key")
 
 THEME_TEMPLATE_FILES = (
@@ -94,7 +97,16 @@ DEFAULT_CONFIG = {
     "screen_effects_layer": "bottom",
     "screen_effects_intensity": 1.0,
     "weather_cache": None,
-    "location_cache": None
+    "location_cache": None,
+    "gpu_guard": {
+        "auto_protect": False,
+        "warn_vram_percent": 75,
+        "critical_vram_percent": 90,
+        "warn_temperature": 80,
+        "critical_temperature": 88,
+        "aura_paused": False,
+        "last_action": ""
+    }
 }
 
 AESTHETIC_TOPICS = [
@@ -251,6 +263,229 @@ def systemd_is_active():
         ).returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
+
+GPU_GUARD_DEFAULTS = {
+    "auto_protect": False,
+    "warn_vram_percent": 75,
+    "critical_vram_percent": 90,
+    "warn_temperature": 80,
+    "critical_temperature": 88,
+    "aura_paused": False,
+    "last_action": ""
+}
+
+@contextmanager
+def gpu_guard_lock():
+    """Serialize guard decisions so overlapping bar polls cannot race."""
+    try:
+        os.makedirs(os.path.dirname(GPU_GUARD_LOCK_FILE), exist_ok=True)
+        with open(GPU_GUARD_LOCK_FILE, "a+") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        # Telemetry remains useful even when the runtime directory is unusual.
+        yield
+
+def load_gpu_guard_config(cfg=None):
+    state = dict(GPU_GUARD_DEFAULTS)
+    source = cfg if cfg is not None else load_config()
+    saved = source.get("gpu_guard", {})
+    if isinstance(saved, dict):
+        state.update(saved)
+    for key, minimum, maximum in (
+        ("warn_vram_percent", 50, 95),
+        ("critical_vram_percent", 70, 99),
+        ("warn_temperature", 60, 95),
+        ("critical_temperature", 70, 105),
+    ):
+        try:
+            state[key] = max(minimum, min(maximum, int(state[key])))
+        except (KeyError, TypeError, ValueError):
+            state[key] = GPU_GUARD_DEFAULTS[key]
+    state["auto_protect"] = bool(state.get("auto_protect", False))
+    state["aura_paused"] = bool(state.get("aura_paused", False))
+    return state
+
+def save_gpu_guard_config(state, cfg=None):
+    target = cfg if cfg is not None else load_config()
+    target["gpu_guard"] = dict(state)
+    save_config(target)
+
+def parse_gpu_guard_row(line):
+    fields = next(csv.reader([line], skipinitialspace=True), [])
+    if len(fields) < 7:
+        return None
+    try:
+        used = int(float(fields[1]))
+        total = int(float(fields[2]))
+        utilization = int(float(fields[3]))
+        temperature = int(float(fields[4]))
+        power_draw = float(fields[5])
+        power_limit = float(fields[6])
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    return {
+        "name": fields[0].strip(),
+        "used_mib": max(0, used),
+        "total_mib": total,
+        "vram_percent": round((used / total) * 100, 1),
+        "utilization_percent": max(0, utilization),
+        "temperature_c": temperature,
+        "power_draw_w": round(power_draw, 1),
+        "power_limit_w": round(power_limit, 1)
+    }
+
+def parse_gpu_guard_processes(text):
+    processes = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = next(csv.reader([line], skipinitialspace=True), [])
+        if len(fields) < 3:
+            continue
+        try:
+            pid = int(fields[0])
+            used = int(float(fields[2]))
+        except (TypeError, ValueError):
+            continue
+        processes.append({"pid": pid, "name": fields[1].strip(), "used_mib": max(0, used)})
+    return sorted(processes, key=lambda item: item["used_mib"], reverse=True)[:8]
+
+def collect_gpu_guard_metrics():
+    binary = shutil.which("nvidia-smi")
+    if not binary:
+        return {"available": False, "error": "nvidia-smi is not installed"}, []
+    query = [
+        binary,
+        "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit",
+        "--format=csv,noheader,nounits"
+    ]
+    try:
+        result = subprocess.run(
+            query, check=False, capture_output=True, text=True, timeout=3,
+            env={**os.environ, "LC_ALL": "C"}
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
+        return {"available": False, "error": str(error)}, []
+    if result.returncode != 0:
+        return {"available": False, "error": (result.stderr.strip() or "nvidia-smi could not read the GPU")[-240:]}, []
+    gpu = None
+    for line in result.stdout.splitlines():
+        gpu = parse_gpu_guard_row(line)
+        if gpu:
+            break
+    if not gpu:
+        return {"available": False, "error": "nvidia-smi returned no usable GPU metrics"}, []
+    processes = []
+    try:
+        process_result = subprocess.run(
+            [binary, "--query-compute-apps=pid,name,used_memory", "--format=csv,noheader,nounits"],
+            check=False, capture_output=True, text=True, timeout=3,
+            env={**os.environ, "LC_ALL": "C"}
+        )
+        if process_result.returncode == 0:
+            processes = parse_gpu_guard_processes(process_result.stdout)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+    return {"available": True, **gpu}, processes
+
+def gpu_guard_level(metrics, state):
+    if not metrics.get("available"):
+        return "unavailable"
+    if metrics["vram_percent"] >= state["critical_vram_percent"] or metrics["temperature_c"] >= state["critical_temperature"]:
+        return "critical"
+    if metrics["vram_percent"] >= state["warn_vram_percent"] or metrics["temperature_c"] >= state["warn_temperature"]:
+        return "warning"
+    return "nominal"
+
+def gpu_guard_stop_service():
+    if not systemd_is_active():
+        return False
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", "stop", "material-cycler.service"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
+        ).returncode == 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+def gpu_guard_start_service():
+    if not systemd_unit_available():
+        return False
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", "start", "material-cycler.service"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
+        ).returncode == 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+def apply_gpu_guard_protection(metrics, state):
+    level = gpu_guard_level(metrics, state)
+    if not state.get("auto_protect") or not metrics.get("available"):
+        return ""
+    if level == "critical" and not state.get("aura_paused"):
+        if not systemd_is_active():
+            state["last_action"] = "Aura service was already inactive; no service action taken"
+            return state["last_action"]
+        if gpu_guard_stop_service():
+            state["aura_paused"] = True
+            state["last_action"] = "Paused material-cycler.service at critical GPU pressure"
+            return state["last_action"]
+        state["last_action"] = "Could not pause material-cycler.service"
+        return state["last_action"]
+    if level == "nominal" and state.get("aura_paused"):
+        if gpu_guard_start_service():
+            state["aura_paused"] = False
+            state["last_action"] = "Resumed material-cycler.service after GPU pressure cleared"
+            return state["last_action"]
+        state["last_action"] = "Could not resume material-cycler.service"
+        return state["last_action"]
+    return ""
+
+def gpu_guard_status(apply_protection=False):
+    cfg = load_config()
+    state = load_gpu_guard_config(cfg)
+    metrics, processes = collect_gpu_guard_metrics()
+    action = apply_gpu_guard_protection(metrics, state) if apply_protection else ""
+    if action:
+        save_gpu_guard_config(state, cfg)
+    return {
+        "level": gpu_guard_level(metrics, state),
+        "auto_protect": state["auto_protect"],
+        "aura_paused": state["aura_paused"],
+        "last_action": action or state.get("last_action", ""),
+        "thresholds": {
+            "warn_vram_percent": state["warn_vram_percent"],
+            "critical_vram_percent": state["critical_vram_percent"],
+            "warn_temperature": state["warn_temperature"],
+            "critical_temperature": state["critical_temperature"]
+        },
+        "metrics": metrics,
+        "processes": processes
+    }
+
+def gpu_guard_cmd(args):
+    if not args or args[0] in ("status", "status-json"):
+        global QUIET_OUTPUT
+        QUIET_OUTPUT = True
+        with gpu_guard_lock():
+            print(json.dumps(gpu_guard_status(apply_protection=True)))
+        QUIET_OUTPUT = False
+        return
+    if args[0] in ("toggle-protect", "protect"):
+        cfg = load_config()
+        state = load_gpu_guard_config(cfg)
+        state["auto_protect"] = not state["auto_protect"]
+        save_gpu_guard_config(state, cfg)
+        print(f"Aura GPU auto-protect: {'Enabled' if state['auto_protect'] else 'Disabled'}")
+        return
+    print("Usage: aura-cycler gpu-guard {status|toggle-protect}")
 
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
@@ -1294,6 +1529,8 @@ def status_json():
             pass
 
     weather_data = get_weather()
+    with gpu_guard_lock():
+        gpu_guard_data = gpu_guard_status(apply_protection=True)
 
     state = {
         "active": active,
@@ -1313,6 +1550,7 @@ def status_json():
         },
         "weather_sync": cfg.get("weather_sync", True),
         "stream_online": cfg.get("stream_online", False),
+        "gpu_guard": gpu_guard_data,
         "custom_folders": cfg.get("custom_folders", []),
         "wallpapers_count": len(wallpapers),
         "screen_effects": cfg.get("screen_effects", True),
@@ -1442,5 +1680,7 @@ if __name__ == "__main__":
         folder_cmd(sys.argv[2:])
     elif action in ("effects", "screen-effects", "atmosphere"):
         effects_cmd(sys.argv[2:])
+    elif action in ("gpu-guard", "guard"):
+        gpu_guard_cmd(sys.argv[2:])
     else:
-        print("Usage: aura-cycler {start|stop|toggle|restart|status|status-json|next|interval <sec>|blur [up|down|<px>]|weather-toggle|stream-toggle|folder {list|add|remove}|effects {toggle|mode|layer|intensity}|fetch|keyboard {off|allow}}")
+        print("Usage: aura-cycler {start|stop|toggle|restart|status|status-json|next|interval <sec>|blur [up|down|<px>]|weather-toggle|stream-toggle|folder {list|add|remove}|effects {toggle|mode|layer|intensity}|gpu-guard {status|toggle-protect}|fetch|keyboard {off|allow}}")

@@ -24,7 +24,7 @@ _No response_
 
 ### Maintainer notes
 
-Dynamic wallpaper cycler with local Material You palette extraction, optional Open-Meteo weather adaptation, click-through atmospheric effects, and optional ASUS Aura keyboard synchronization. New installs default to local/offline rotation every five minutes; online 4K downloads and systemd supervision are opt-in. The plugin uses an owner-only daemon lock and caches palette results by image path and modification time. MIT licensed.
+Adaptive desktop environment with local Material You palette extraction, optional Open-Meteo weather adaptation, click-through atmospheric effects, optional ASUS Aura keyboard synchronization, and GPU-aware performance protection. New installs default to local/offline rotation every five minutes; online 4K downloads and systemd supervision are opt-in. GPU telemetry is read-only by default; Auto-Protect is opt-in and only pauses an already-active material-cycler service during critical pressure, resuming it only when Aura performed the pause. The plugin uses owner-only locks and caches palette results by image path and modification time. MIT licensed.
 
 ### Submission checklist
 

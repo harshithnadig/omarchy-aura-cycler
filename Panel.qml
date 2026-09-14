@@ -45,9 +45,23 @@ Panel {
   property var customFolders: []
   property int wallpapersCount: 0
 
+  // GPU-aware performance guard state
+  property string gpuGuardLevel: "unavailable"
+  property bool gpuGuardAutoProtect: false
+  property bool gpuGuardAuraPaused: false
+  property string gpuGuardName: "GPU unavailable"
+  property string gpuGuardError: ""
+  property int gpuVramUsedMib: 0
+  property int gpuVramTotalMib: 0
+  property real gpuVramPercent: 0
+  property int gpuTemperatureC: 0
+  property int gpuUtilizationPercent: 0
+  property var gpuProcesses: []
+
   readonly property color fg: bar ? bar.foreground : Color.popups.text
   readonly property color bg: Color.popups.background
   readonly property color accent: currentAccent ? currentAccent : Color.accent
+  readonly property color gpuGuardColor: gpuGuardLevel === "critical" ? "#ff5f56" : (gpuGuardLevel === "warning" ? "#f5c451" : accent)
   readonly property string fontFam: bar ? bar.fontFamily : Style.font.family
 
   function open() {
@@ -116,6 +130,20 @@ Panel {
           if (d.screen_effects_mode) root.screenEffectsMode = d.screen_effects_mode
           if (d.screen_effects_layer) root.screenEffectsLayer = d.screen_effects_layer
           if (d.screen_effects_intensity !== undefined) root.screenEffectsIntensity = d.screen_effects_intensity
+          var guard = d.gpu_guard || {}
+          root.gpuGuardLevel = guard.level || "unavailable"
+          root.gpuGuardAutoProtect = guard.auto_protect || false
+          root.gpuGuardAuraPaused = guard.aura_paused || false
+          root.gpuProcesses = guard.processes || []
+          root.gpuGuardError = guard.metrics && guard.metrics.error ? guard.metrics.error : ""
+          if (guard.metrics && guard.metrics.available) {
+            root.gpuGuardName = guard.metrics.name || "GPU"
+            root.gpuVramUsedMib = guard.metrics.used_mib || 0
+            root.gpuVramTotalMib = guard.metrics.total_mib || 0
+            root.gpuVramPercent = guard.metrics.vram_percent || 0
+            root.gpuTemperatureC = guard.metrics.temperature_c || 0
+            root.gpuUtilizationPercent = guard.metrics.utilization_percent || 0
+          }
         } catch(e) {}
       }
     }
@@ -245,7 +273,134 @@ Panel {
           }
         }
 
-        // 2. Live Weather Card
+        // 2. GPU-aware performance guard
+        Rectangle {
+          width: parent.width
+          implicitHeight: guardColumn.implicitHeight + Style.space(20)
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.gpuGuardColor.r, root.gpuGuardColor.g, root.gpuGuardColor.b, 0.08)
+          border.color: Qt.rgba(root.gpuGuardColor.r, root.gpuGuardColor.g, root.gpuGuardColor.b, 0.28)
+          border.width: 1
+
+          Column {
+            id: guardColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(10)
+            spacing: Style.space(7)
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              Text {
+                textFormat: Text.PlainText
+                text: "󰢮  GPU Performance Guard"
+                color: root.fg
+                font.family: root.fontFam
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                textFormat: Text.PlainText
+                text: root.gpuGuardLevel.toUpperCase()
+                color: root.gpuGuardColor
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.gpuGuardLevel === "unavailable"
+                ? (root.gpuGuardError || "nvidia-smi telemetry unavailable")
+                : root.gpuGuardName
+              color: Qt.darker(root.fg, 1.4)
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(18)
+              Text {
+                textFormat: Text.PlainText
+                text: root.gpuGuardLevel === "unavailable" ? "VRAM —" : ("VRAM " + root.gpuVramPercent + "%  " + root.gpuVramUsedMib + "/" + root.gpuVramTotalMib + " MiB")
+                color: root.fg
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                textFormat: Text.PlainText
+                text: root.gpuGuardLevel === "unavailable" ? "Temp —" : ("GPU " + root.gpuUtilizationPercent + "%  •  " + root.gpuTemperatureC + "°C")
+                color: root.fg
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Text {
+              visible: root.gpuProcesses.length > 0
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Top workload: " + root.gpuProcesses[0].name + "  •  " + root.gpuProcesses[0].used_mib + " MiB"
+              color: root.muted
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                textFormat: Text.PlainText
+                text: root.gpuGuardAutoProtect ? "󰒓 Auto-Protect enabled" : "󰒓 Auto-Protect off"
+                color: root.muted
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+                anchors.verticalCenter: parent.verticalCenter
+              }
+              Rectangle {
+                width: guardToggleLabel.implicitWidth + Style.space(16)
+                height: Style.space(24)
+                radius: Style.space(12)
+                color: Qt.rgba(root.gpuGuardColor.r, root.gpuGuardColor.g, root.gpuGuardColor.b, 0.18)
+                Text {
+                  id: guardToggleLabel
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: root.gpuGuardAutoProtect ? "Disable" : "Enable"
+                  color: root.gpuGuardColor
+                  font.family: root.fontFam
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.runCmd([root.cliPath, "gpu-guard", "toggle-protect"])
+                }
+              }
+            }
+
+            Text {
+              visible: root.gpuGuardAuraPaused
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Aura rotation paused until GPU pressure clears"
+              color: "#f5c451"
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        // 3. Live Weather Card
         Rectangle {
           width: parent.width
           implicitHeight: weatherCol.implicitHeight + Style.space(18)
