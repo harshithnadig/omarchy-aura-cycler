@@ -12,13 +12,15 @@ Panel {
   ipcTarget: "harshith.aura-cycler.panel"
   manageIpc: false
 
+  readonly property string cliPath: Qt.resolvedUrl("bin/aura-cycler").toString().replace("file://", "")
+
   property var anchorItem: null
   property var hostWidget: null
   property var service: null
   readonly property var barIdentity: hostWidget || root
 
   property bool active: true
-  property int intervalSec: 30
+  property int intervalSec: 300
   property int blurPx: 12
   property string currentWallpaper: ""
   property string wallpaperName: ""
@@ -31,7 +33,7 @@ Panel {
   property string weatherIcon: "󰖗"
   property string weatherCity: "Bengaluru"
   property bool weatherSync: true
-  property bool streamOnline: true
+  property bool streamOnline: false
 
   // Atmospheric screen weather effects
   property bool screenEffects: true
@@ -81,7 +83,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: ["aura-cycler", "status-json"]
+    command: [root.cliPath, "status-json"]
     running: false
     stdout: StdioCollector {
       waitForEnd: true
@@ -238,7 +240,7 @@ Panel {
             MouseArea {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.runCmd(["aura-cycler", "toggle"])
+              onClicked: root.runCmd([root.cliPath, "toggle"])
             }
           }
         }
@@ -338,7 +340,7 @@ Panel {
                 MouseArea {
                   anchors.fill: parent
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.runCmd(["aura-cycler", "weather-toggle"])
+                  onClicked: root.runCmd([root.cliPath, "weather-toggle"])
                 }
               }
             }
@@ -437,7 +439,7 @@ Panel {
                   onClicked: {
                     root.screenEffects = !root.screenEffects
                     if (root.service) root.service.effectsEnabled = root.screenEffects
-                    root.runCmd(["aura-cycler", "effects", "toggle"])
+                    root.runCmd([root.cliPath, "effects", "toggle"])
                   }
                 }
               }
@@ -487,7 +489,7 @@ Panel {
                         root.service.weatherMode = modelData.id
                         root.service.resolveEffect()
                       }
-                      root.runCmd(["aura-cycler", "effects", "mode", modelData.id])
+                      root.runCmd([root.cliPath, "effects", "mode", modelData.id])
                     }
                   }
                 }
@@ -528,7 +530,7 @@ Panel {
                     var nextLayer = root.screenEffectsLayer === "top" ? "bottom" : "top"
                     root.screenEffectsLayer = nextLayer
                     if (root.service) root.service.overlayLayer = nextLayer
-                    root.runCmd(["aura-cycler", "effects", "layer"])
+                    root.runCmd([root.cliPath, "effects", "layer"])
                   }
                 }
               }
@@ -562,7 +564,7 @@ Panel {
                     var next = root.screenEffectsIntensity === 0.5 ? "1.0" : (root.screenEffectsIntensity === 1.0 ? "1.5" : "0.5")
                     root.screenEffectsIntensity = parseFloat(next)
                     if (root.service) root.service.effectIntensity = root.screenEffectsIntensity
-                    root.runCmd(["aura-cycler", "effects", "intensity", next])
+                    root.runCmd([root.cliPath, "effects", "intensity", next])
                   }
                 }
               }
@@ -718,7 +720,7 @@ Panel {
             MouseArea {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.runCmd(["aura-cycler", "next"])
+              onClicked: root.runCmd([root.cliPath, "next"])
             }
           }
 
@@ -740,7 +742,7 @@ Panel {
             MouseArea {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.runCmd(["aura-cycler", "toggle"])
+              onClicked: root.runCmd([root.cliPath, "toggle"])
             }
           }
 
@@ -819,7 +821,7 @@ Panel {
                 MouseArea {
                   anchors.fill: parent
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.runCmd(["aura-cycler", "interval", String(modelData.sec)])
+                  onClicked: root.runCmd([root.cliPath, "interval", String(modelData.sec)])
                 }
               }
             }
@@ -903,7 +905,7 @@ Panel {
                   MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.runCmd(["aura-cycler", "folder", "remove", modelData])
+                    onClicked: root.runCmd([root.cliPath, "folder", "remove", modelData])
                   }
                 }
               }
@@ -946,7 +948,7 @@ Panel {
 
                 onAccepted: {
                   if (folderInput.text.trim()) {
-                    root.runCmd(["aura-cycler", "folder", "add", folderInput.text.trim()])
+                    root.runCmd([root.cliPath, "folder", "add", folderInput.text.trim()])
                     folderInput.text = ""
                   }
                 }
@@ -975,7 +977,7 @@ Panel {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                   if (folderInput.text.trim()) {
-                    root.runCmd(["aura-cycler", "folder", "add", folderInput.text.trim()])
+                    root.runCmd([root.cliPath, "folder", "add", folderInput.text.trim()])
                     folderInput.text = ""
                   }
                 }
@@ -1032,7 +1034,7 @@ Panel {
                 MouseArea {
                   anchors.fill: parent
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.runCmd(["aura-cycler", "blur", String(modelData.px)])
+                  onClicked: root.runCmd([root.cliPath, "blur", String(modelData.px)])
                 }
               }
             }
@@ -1084,7 +1086,7 @@ Panel {
             MouseArea {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.runCmd(["aura-cycler", "stream-toggle"])
+              onClicked: root.runCmd([root.cliPath, "stream-toggle"])
             }
           }
         }

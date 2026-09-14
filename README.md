@@ -9,7 +9,7 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
 
 ## Highlights
 
-- **Dynamic 4K Wallpaper Engine**: Automatically cycles authentic 4K/UHD photography and art from local directories and curated online streams (Wallhaven & Bing daily archives).
+- **Dynamic 4K Wallpaper Engine**: Automatically cycles authentic 4K/UHD photography and art from local directories. Optional Wallhaven/Bing streaming is disabled by default and can be enabled explicitly.
 - **On-Screen Atmospheric Weather Effects**: Renders realistic visual particle effects directly on your display across all weather types:
   - 󰖗 **Rain / Drizzle**: Falling raindrop streaks with realistic slanting speed and bottom splash ripples.
   - 󰖓 **Thunderstorm**: Deluge rainfall with branching lightning bolts and full-screen illumination flashes.
@@ -21,7 +21,7 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
   - **Layer Placement Control**: Toggle rendering right on the wallpaper behind windows (`WlrLayer.Bottom`) or immersive over windows (`WlrLayer.Top`).
   - **Smart Fullscreen Auto-Pause**: Listens to Hyprland socket2 to instantly unmap/pause animation during fullscreen apps, gaming, or video playback (0% CPU/GPU).
 - **Live Weather-Adaptive Atmosphere**: Automatically queries real-time outdoor weather conditions (via Open-Meteo) and streams matching wallpapers and screen effects.
-- **Aether On-Device Material You Theme Engine**: Automatically analyzes active wallpapers using an offline Vision Model (Pillow + K-Means + Google Material You Monet HCT), generating a full 16-color palette and dynamically restyling the **entire Omarchy desktop** (top bar, window borders, menus, Chrome browser policies, Alacritty, Kitty, Ghostty, Foot, VS Code, Obsidian, and Helix).
+- **Aether On-Device Material You Theme Engine**: Automatically analyzes active wallpapers using local Pillow + K-Means + Google Material You Monet HCT, generating a full palette and dynamically restyling the **entire Omarchy desktop** (top bar, window borders, menus, Chrome browser policies, Alacritty, Kitty, Ghostty, Foot, VS Code, Obsidian, and Helix). Palette results are cached by image path and modification time.
 - **ASUS Aura Keyboard Backlight Sync**: Synchronizes the wallpaper's primary accent hue directly to your ASUS laptop keyboard using `asusctl` static mode, while strictly respecting manual user brightness levels.
 - **Interactive Settings Panel (`Panel.qml`)**:
   - Live outdoor weather card with real-time temperature, condition icon, and weather-adaptive toggle.
@@ -33,7 +33,7 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
   - Liquid Glass Blur selector: 0px to 24px.
   - Online 4K stream toggle switch.
 - **Keyboard-First & Mouse-Free**: Full control via Hyprland keybindings without needing a mouse.
-- **Bulletproof Persistence**: Operates under systemd user supervisor (`material-cycler.service`) with auto-recovery and Omarchy hooks.
+- **Resource-Conscious Persistence**: New installs use a 5-minute rotation interval and keep online 4K downloads disabled until enabled. The user-session daemon uses an owner-only lock, avoids duplicate processes, and can optionally be supervised by systemd.
 
 ## Interactive Settings Panel & Bar Controls
 
@@ -55,36 +55,38 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
 
 ## CLI Commands
 
-The engine ships with the `aura-cycler` binary (also symlinked as `material-cycler`):
+The engine ships with `bin/aura-cycler`. Use the installed plugin path unless you create your own shell alias:
 
 ```bash
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
+
 # Playback & Rotation
-aura-cycler next                  # Skip to next wallpaper and recolor system
-aura-cycler interval 30           # Set rotation interval to 30 seconds
-aura-cycler interval 300          # Set rotation interval to 5 minutes
-aura-cycler start                 # Resume rotation daemon
-aura-cycler stop                  # Pause rotation daemon
-aura-cycler toggle                # Toggle pause/resume
+"$PLUGIN_DIR/bin/aura-cycler" next                  # Skip to next wallpaper and recolor system
+"$PLUGIN_DIR/bin/aura-cycler" interval 30           # Set rotation interval to 30 seconds
+"$PLUGIN_DIR/bin/aura-cycler" interval 300          # Set rotation interval to 5 minutes
+"$PLUGIN_DIR/bin/aura-cycler" start                 # Resume rotation daemon
+"$PLUGIN_DIR/bin/aura-cycler" stop                  # Pause rotation daemon
+"$PLUGIN_DIR/bin/aura-cycler" toggle                # Toggle pause/resume
 
 # Weather & Atmospheric Effects
-aura-cycler weather-toggle        # Toggle real-time weather-adaptive wallpaper selection
-aura-cycler stream-toggle         # Toggle online 4K streaming (Wallhaven/Bing)
-aura-cycler effects toggle        # Toggle on-screen atmospheric weather particles on/off
-aura-cycler effects mode rain     # Force specific weather effect (auto|rain|thunder|snow|sun|stars|fog)
-aura-cycler effects layer top     # Toggle layer (bottom = on wallpaper behind windows, top = over windows)
-aura-cycler effects intensity 1.5 # Set particle density/intensity (0.5 = subtle, 1.0 = normal, 1.5 = dramatic)
+"$PLUGIN_DIR/bin/aura-cycler" weather-toggle        # Toggle real-time weather-adaptive wallpaper selection
+"$PLUGIN_DIR/bin/aura-cycler" stream-toggle         # Toggle online 4K streaming (Wallhaven/Bing)
+"$PLUGIN_DIR/bin/aura-cycler" effects toggle        # Toggle on-screen atmospheric weather particles on/off
+"$PLUGIN_DIR/bin/aura-cycler" effects mode rain     # Force specific weather effect (auto|rain|thunder|snow|sun|stars|fog)
+"$PLUGIN_DIR/bin/aura-cycler" effects layer top     # Toggle layer (bottom = on wallpaper behind windows, top = over windows)
+"$PLUGIN_DIR/bin/aura-cycler" effects intensity 1.5 # Set particle density/intensity (0.5 = subtle, 1.0 = normal, 1.5 = dramatic)
 
 # Custom Wallpaper Folders
-aura-cycler folder list           # List configured wallpaper folders & image counts
-aura-cycler folder add ~/Pictures/Wallpapers   # Add a custom wallpaper folder
-aura-cycler folder remove ~/Pictures/Wallpapers # Remove a folder from rotation
+"$PLUGIN_DIR/bin/aura-cycler" folder list           # List configured wallpaper folders & image counts
+"$PLUGIN_DIR/bin/aura-cycler" folder add ~/Pictures/Wallpapers   # Add a custom wallpaper folder
+"$PLUGIN_DIR/bin/aura-cycler" folder remove ~/Pictures/Wallpapers # Remove a folder from rotation
 
 # Appearance & Hardware
-aura-cycler blur 12               # Set glass blur intensity (0 to 24px)
-aura-cycler keyboard off          # Turn keyboard LEDs off (disables sync writes)
-aura-cycler keyboard allow        # Re-enable keyboard sync writes
-aura-cycler status                # View current service, weather, and folder status
-aura-cycler status-json           # Export complete machine-readable state JSON
+"$PLUGIN_DIR/bin/aura-cycler" blur 12               # Set glass blur intensity (0 to 24px)
+"$PLUGIN_DIR/bin/aura-cycler" keyboard off          # Turn keyboard LEDs off (disables sync writes)
+"$PLUGIN_DIR/bin/aura-cycler" keyboard allow        # Re-enable keyboard sync writes
+"$PLUGIN_DIR/bin/aura-cycler" status                # View current service, weather, and folder status
+"$PLUGIN_DIR/bin/aura-cycler" status-json           # Export complete machine-readable state JSON
 ```
 
 ## Installation
@@ -102,27 +104,49 @@ git clone https://github.com/harshithnadig/omarchy-aura-cycler.git ~/.config/oma
 omarchy plugin enable harshith.aura-cycler
 ```
 
+Enabling the plugin starts a user-session daemon from the plugin directory. For
+systemd supervision across shell restarts, link the included unit explicitly:
+
+```bash
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+ln -sf "$PLUGIN_DIR/systemd/material-cycler.service" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
+systemctl --user daemon-reload
+systemctl --user enable --now material-cycler.service
+```
+
+The default mode is local/offline: 5-minute rotation and no online wallpaper
+downloads. Enable the online stream from the panel or with
+`"$PLUGIN_DIR/bin/aura-cycler" stream-toggle` when desired.
+
 ## Removal
 
 To uninstall the plugin:
 
 ```bash
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
+"$PLUGIN_DIR/bin/aura-cycler" stop
+systemctl --user disable --now material-cycler.service 2>/dev/null || true
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
+systemctl --user daemon-reload
 omarchy plugin disable harshith.aura-cycler
 omarchy plugin remove harshith.aura-cycler
-```
-
-Or manually remove:
-
-```bash
-systemctl --user stop material-cycler.service
-rm -rf ~/.config/omarchy/plugins/harshith.aura-cycler
 ```
 
 ## External Dependencies
 
 - `asusctl` (optional, for ASUS ROG / TUF keyboard RGB backlight sync)
-- `python3`, `pillow`, `materialyoucolor`, `scikit-learn`, `numpy` (automatically bootstrapped in isolated user runtime)
-- `curl` / standard networking (for Open-Meteo weather and 4K wallpaper streaming)
+- `python3`, `python3-venv`, `pillow`, `materialyoucolor`, `scikit-learn`, `numpy` (required for image validation and palette extraction)
+- standard HTTPS networking (only for weather and optional 4K wallpaper streaming)
+
+The plugin does not silently install packages or run a remote installer. If the
+Python packages are not already available, create a user-owned environment and
+install them before enabling rotation:
+
+```bash
+python3 -m venv "$HOME/.local/share/omarchy/aura-cycler-venv"
+"$HOME/.local/share/omarchy/aura-cycler-venv/bin/pip" install Pillow numpy scikit-learn materialyoucolor
+```
 
 ## Compatibility
 

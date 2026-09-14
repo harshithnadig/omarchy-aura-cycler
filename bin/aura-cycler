@@ -16,6 +16,7 @@ import random
 import signal
 import subprocess
 import re
+import hashlib
 import urllib.request
 import urllib.parse
 import base64
@@ -25,6 +26,11 @@ import tempfile
 import warnings
 warnings.simplefilter("ignore")
 
+# Keep image analysis from competing aggressively with local inference or the
+# desktop shell when the CLI is invoked outside systemd.
+for _thread_env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_thread_env, "1")
+
 CACHE_DIR = os.path.expanduser("~/.local/share/omarchy/dynamic-wallpapers")
 STATE_DIR = os.path.expanduser("~/.local/state/omarchy")
 CONFIG_FILE = os.path.join(STATE_DIR, "aura-cycler-config.json")
@@ -33,10 +39,12 @@ LOG_FILE = os.path.join(STATE_DIR, "material-cycler.log")
 INTERVAL_FILE = os.path.join(STATE_DIR, "material-cycler-interval.txt")
 BLUR_FILE = os.path.join(STATE_DIR, "glass-blur.txt")
 PALETTE_STATE_FILE = os.path.join(STATE_DIR, "wallpaper-palette.json")
+PALETTE_CACHE_DIR = os.path.expanduser("~/.cache/omarchy/aura-cycler/palettes")
 CURRENT_THEME_DIR = os.path.join(STATE_DIR, "current", "theme")
 NEXT_THEME_DIR = os.path.join(STATE_DIR, "current", "next-theme")
 THEME_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "omarchy-theme-set.lock")
 KEYBOARD_LOCK_FILE = os.path.join(STATE_DIR, "keyboard-color.lock")
+DAEMON_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "aura-cycler.lock")
 WALLHAVEN_KEY_FILE = os.path.expanduser("~/.config/aura-cycler/wallhaven.key")
 
 THEME_TEMPLATE_FILES = (
@@ -64,6 +72,12 @@ MAX_WALLPAPER_PIXELS = 16_000_000
 
 last_keyboard_level = None
 last_keyboard_color = None
+QUIET_OUTPUT = False
+
+def _shutdown_daemon(_signum, _frame):
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGTERM, _shutdown_daemon)
 
 DEFAULT_CONFIG = {
     "custom_folders": [
@@ -72,8 +86,8 @@ DEFAULT_CONFIG = {
         os.path.expanduser("~/Pictures/Wallpapers")
     ],
     "weather_sync": True,
-    "stream_online": True,
-    "interval": 30,
+    "stream_online": False,
+    "interval": 300,
     "blur": 12,
     "screen_effects": True,
     "screen_effects_mode": "auto",
@@ -116,8 +130,10 @@ WMO_WEATHER_MAP = {
 def log(msg):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] {msg}"
-    print(formatted)
+    if not QUIET_OUTPUT:
+        print(formatted)
     try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
         with open(LOG_FILE, "a") as f:
             f.write(formatted + "\n")
     except Exception:
@@ -166,6 +182,75 @@ def atomic_copy_file(source, destination):
                 os.unlink(temporary)
             except OSError:
                 pass
+
+def palette_cache_path(image_path):
+    """Return a cache path that invalidates when the image changes."""
+    try:
+        stat = os.stat(image_path)
+        identity = f"{os.path.realpath(image_path)}|{stat.st_size}|{stat.st_mtime_ns}"
+    except OSError:
+        identity = os.path.realpath(image_path)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return os.path.join(PALETTE_CACHE_DIR, f"{digest}.json")
+
+def load_cached_palette(image_path):
+    try:
+        with open(palette_cache_path(image_path), "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if cached.get("accent") and cached.get("palette"):
+            return cached["accent"], cached["palette"]
+    except (OSError, ValueError, TypeError):
+        pass
+    return None, None
+
+def save_cached_palette(image_path, accent_hex, palette):
+    try:
+        os.makedirs(PALETTE_CACHE_DIR, exist_ok=True)
+        atomic_write_text(
+            palette_cache_path(image_path),
+            json.dumps({"accent": accent_hex, "palette": palette}, sort_keys=True) + "\n",
+            0o600,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        log(f"Palette cache write notice: {error}")
+
+def daemon_is_active():
+    """Check the owner-only runtime lock instead of requiring systemd."""
+    try:
+        os.makedirs(os.path.dirname(DAEMON_LOCK_FILE), exist_ok=True)
+        with open(DAEMON_LOCK_FILE, "a+") as lock_handle:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            finally:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+    except OSError:
+        return False
+    return False
+
+def systemd_unit_available():
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", "cat", "material-cycler.service"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+        ).returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+def systemd_is_active():
+    if not systemd_unit_available():
+        return False
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", "material-cycler.service"],
+            timeout=2
+        ).returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
 
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
@@ -360,7 +445,7 @@ def download_wallpaper(url, destination, minimum=(2560, 1440)):
 
 def get_interval():
     cfg = load_config()
-    return max(5, int(cfg.get("interval", 30)))
+    return max(5, int(cfg.get("interval", 300)))
 
 def set_interval(val):
     cfg = load_config()
@@ -631,11 +716,16 @@ def fetch_4k_wallpapers(count=4):
 
 def extract_focal_colors_offline(image_path):
     """
-    Offline Vision Model:
+    Offline palette extraction:
     Uses Pillow + NumPy + K-Means clustering + Google Material You Monet HCT.
     Filters background voids and scores clusters by chromaticity and focal presence.
     Returns (accent_hex, theme_palette).
     """
+    cached_accent, cached_palette = load_cached_palette(image_path)
+    if cached_accent and cached_palette:
+        log(f"Palette cache hit: {os.path.basename(image_path)}")
+        return cached_accent, cached_palette
+
     try:
         from PIL import Image
         import numpy as np
@@ -726,6 +816,7 @@ def extract_focal_colors_offline(image_path):
             'bright_cyan': hx(sc.tone(85)),
             'brown': hx(p.tone(45)),
         }
+        save_cached_palette(image_path, accent_hex, theme_palette)
         return accent_hex, theme_palette
     except Exception as e:
         log(f"Offline model extraction error: {e}")
@@ -880,16 +971,19 @@ def apply_next_wallpaper():
     chosen = None
     
     # 1. Stream fresh 4K wallpaper if stream_online is enabled (40% probability)
-    if cfg.get("stream_online", True) and random.random() < 0.40:
+    if cfg.get("stream_online", False) and random.random() < 0.40:
         chosen = fetch_single_random_4k()
 
     # 2. Select from local wallpaper pool
     if not chosen:
         wallpapers = collect_local_wallpapers()
         if not wallpapers:
-            log("No wallpapers found locally, fetching 4K batch...")
-            fetch_4k_wallpapers(4)
-            wallpapers = collect_local_wallpapers()
+            if cfg.get("stream_online", False):
+                log("No wallpapers found locally, fetching 4K batch...")
+                fetch_4k_wallpapers(4)
+                wallpapers = collect_local_wallpapers()
+            else:
+                log("No wallpapers found locally and online streaming is disabled.")
         if wallpapers:
             current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
             current_bg = os.path.realpath(current_bg_link) if os.path.exists(current_bg_link) else ""
@@ -973,41 +1067,99 @@ def apply_next_wallpaper():
         log(f"Live app theme sync notice: {e}")
 
 def run_loop():
-    log("Aura Material Cycler service started.")
-    last_fetch = 0
-    while True:
+    daemon_lock = None
+    try:
+        os.makedirs(os.path.dirname(DAEMON_LOCK_FILE), exist_ok=True)
+        daemon_lock = open(DAEMON_LOCK_FILE, "a+")
         try:
-            apply_next_wallpaper()
-            now = time.time()
-            if now - last_fetch > 1800:
-                last_fetch = now
-                try:
-                    fetch_4k_wallpapers(2)
-                except Exception:
-                    pass
-        except Exception as e:
-            log(f"Loop error: {e}")
-        
-        interval = get_interval()
-        sleep_with_keyboard_sync(interval)
+            fcntl.flock(daemon_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("Aura Material Cycler is already running; exiting duplicate daemon.")
+            return
+
+        os.makedirs(STATE_DIR, exist_ok=True)
+        atomic_write_text(PID_FILE, f"{os.getpid()}\n", 0o600)
+        log("Aura Material Cycler service started.")
+        last_fetch = 0
+        while True:
+            try:
+                apply_next_wallpaper()
+                now = time.time()
+                if now - last_fetch > 1800:
+                    last_fetch = now
+                    try:
+                        fetch_4k_wallpapers(2)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"Loop error: {e}")
+
+            interval = get_interval()
+            sleep_with_keyboard_sync(interval)
+    finally:
+        try:
+            if os.path.exists(PID_FILE):
+                with open(PID_FILE, "r", encoding="utf-8") as f:
+                    if f.read().strip() == str(os.getpid()):
+                        os.unlink(PID_FILE)
+        except OSError:
+            pass
+        if daemon_lock:
+            try:
+                fcntl.flock(daemon_lock.fileno(), fcntl.LOCK_UN)
+                daemon_lock.close()
+            except OSError:
+                pass
 
 def start_daemon():
-    res = subprocess.run(["systemctl", "--user", "start", "material-cycler.service"])
-    if res.returncode == 0:
-        print("Aura Material Cycler started successfully.")
-    else:
-        print("Failed to start service via systemd.")
+    if daemon_is_active() or systemd_is_active():
+        print("Aura Material Cycler is already running.")
+        return
+    if systemd_unit_available():
+        try:
+            res = subprocess.run(["systemctl", "--user", "start", "material-cycler.service"], timeout=5)
+            if res.returncode == 0:
+                print("Aura Material Cycler started successfully via systemd.")
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.realpath(__file__), "run"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        time.sleep(0.25)
+    except OSError as error:
+        print(f"Failed to start Aura Material Cycler: {error}")
+        return
+    print("Aura Material Cycler started in the user session.") if daemon_is_active() else print("Aura Material Cycler did not start; check the log.")
 
 def stop_daemon():
-    res = subprocess.run(["systemctl", "--user", "stop", "material-cycler.service"])
-    if res.returncode == 0:
+    if systemd_is_active():
+        try:
+            subprocess.run(["systemctl", "--user", "stop", "material-cycler.service"], timeout=5)
+            print("Aura Material Cycler stopped.")
+            return
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+    try:
+        with open(PID_FILE, "r", encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
         print("Aura Material Cycler stopped.")
-    else:
-        print("Failed to stop service.")
+    except (FileNotFoundError, ValueError, ProcessLookupError):
+        print("Aura Material Cycler is already stopped.")
+    except PermissionError:
+        print("Could not stop Aura Material Cycler: permission denied.")
 
 def toggle_daemon():
-    res = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "material-cycler.service"])
-    if res.returncode == 0:
+    if daemon_is_active() or systemd_is_active():
         stop_daemon()
     else:
         start_daemon()
@@ -1019,7 +1171,7 @@ def cycle_interval():
         idx = steps.index(cur)
         next_val = steps[(idx + 1) % len(steps)]
     except ValueError:
-        next_val = 30
+        next_val = 300
     set_interval(next_val)
     label = f"{next_val}s" if next_val < 60 else f"{next_val // 60}m"
     try:
@@ -1037,8 +1189,13 @@ def keyboard_policy(mode):
     """Apply an explicit user keyboard action without blocking later manual changes."""
     mode = str(mode or "").strip().lower()
     if mode in ("off", "lock"):
-        subprocess.run(["asusctl", "leds", "set", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-        print("Keyboard LEDs set to Off; wallpaper sync will not write while they are Off.")
+        try:
+            subprocess.run(["asusctl", "leds", "set", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            print("Keyboard LEDs set to Off; wallpaper sync will not write while they are Off.")
+        except FileNotFoundError:
+            print("asusctl is not installed; ASUS keyboard control is unavailable.")
+        except subprocess.TimeoutExpired:
+            print("asusctl timed out; keyboard state was not changed.")
     elif mode in ("allow", "on", "unlock"):
         print("Keyboard sync allows manual brightness changes; wallpaper sync never changes brightness.")
     else:
@@ -1104,15 +1261,16 @@ def weather_toggle():
 
 def stream_toggle():
     cfg = load_config()
-    current = cfg.get("stream_online", True)
+    current = cfg.get("stream_online", False)
     cfg["stream_online"] = not current
     save_config(cfg)
     status = "Enabled" if cfg["stream_online"] else "Disabled"
     print(f"Online 4K UHD streaming: {status}")
 
 def status_json():
-    res = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "material-cycler.service"])
-    active = (res.returncode == 0)
+    global QUIET_OUTPUT
+    QUIET_OUTPUT = True
+    active = daemon_is_active() or systemd_is_active()
     cfg = load_config()
     wallpapers = collect_local_wallpapers()
     
@@ -1123,7 +1281,7 @@ def status_json():
             current_wp = os.path.realpath(current_wp_link)
         except Exception:
             pass
-    elif os.path.exists(current_bg_link):
+    elif os.path.exists(current_wp_link):
         current_wp = current_wp_link
 
     accent = "#00FF66"
@@ -1139,7 +1297,7 @@ def status_json():
 
     state = {
         "active": active,
-        "interval": cfg.get("interval", 30),
+        "interval": cfg.get("interval", 300),
         "blur": cfg.get("blur", 12),
         "wallpaper": current_wp,
         "wallpaper_name": os.path.basename(current_wp) if current_wp else "Active",
@@ -1154,7 +1312,7 @@ def status_json():
             "is_day": weather_data.get("is_day", True)
         },
         "weather_sync": cfg.get("weather_sync", True),
-        "stream_online": cfg.get("stream_online", True),
+        "stream_online": cfg.get("stream_online", False),
         "custom_folders": cfg.get("custom_folders", []),
         "wallpapers_count": len(wallpapers),
         "screen_effects": cfg.get("screen_effects", True),
@@ -1163,6 +1321,7 @@ def status_json():
         "screen_effects_intensity": cfg.get("screen_effects_intensity", 1.0)
     }
     print(json.dumps(state))
+    QUIET_OUTPUT = False
 
 def effects_cmd(args):
     cfg = load_config()
@@ -1216,11 +1375,10 @@ def effects_cmd(args):
         print("Usage: aura-cycler effects {on|off|toggle|mode <auto|rain|thunder|snow|sun|stars|fog>|layer <bottom|top>|intensity <num>}")
 
 def status_daemon():
-    res = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "material-cycler.service"])
     wallpapers = collect_local_wallpapers()
     cfg = load_config()
     weather = get_weather()
-    status_str = "active (running)" if res.returncode == 0 else "inactive (stopped)"
+    status_str = "active (running)" if (daemon_is_active() or systemd_is_active()) else "inactive (stopped)"
     print(f"● aura-cycler: {status_str} | Interval: {get_interval()}s | Blur: {get_blur()}px")
     print(f"  Available wallpaper pool: {len(wallpapers)} wallpapers across {len(cfg.get('custom_folders', []))} folders")
     print(f"  Live Weather: {weather.get('icon')} {weather.get('temp')}°C ({weather.get('condition')}, {weather.get('city')})")

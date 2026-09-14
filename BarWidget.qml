@@ -8,11 +8,15 @@ BarWidget {
   id: root
   moduleName: "harshith.aura-cycler"
 
+  // Resolve the CLI from the installed plugin directory so marketplace
+  // installs do not depend on a user-managed ~/.local/bin symlink.
+  readonly property string cliPath: Qt.resolvedUrl("bin/aura-cycler").toString().replace("file://", "")
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   property bool active: true
-  property int intervalSec: 30
+  property int intervalSec: 300
   property int blurPx: 12
   property string currentAccent: "#00FF66"
   property string currentWallpaper: ""
@@ -78,7 +82,7 @@ BarWidget {
 
   Process {
     id: stateProc
-    command: ["aura-cycler", "status-json"]
+    command: [root.cliPath, "status-json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -107,19 +111,19 @@ BarWidget {
 
   Process {
     id: nextProc
-    command: ["aura-cycler", "next"]
+    command: [root.cliPath, "next"]
     onExited: root.refreshState()
   }
 
   Process {
     id: toggleProc
-    command: ["aura-cycler", "toggle"]
+    command: [root.cliPath, "toggle"]
     onExited: root.refreshState()
   }
 
   Process {
     id: speedProc
-    command: ["aura-cycler", "cycle-interval"]
+    command: [root.cliPath, "cycle-interval"]
     onExited: root.refreshState()
   }
 
@@ -158,7 +162,7 @@ BarWidget {
       if (idx === -1) idx = 1
       var nextIdx = delta > 0 ? Math.min(steps.length - 1, idx + 1) : Math.max(0, idx - 1)
       if (nextIdx !== idx) {
-        root.bar.run("aura-cycler interval " + steps[nextIdx])
+        root.bar.run(root.cliPath + " interval " + steps[nextIdx])
         root.refreshState()
       }
     }

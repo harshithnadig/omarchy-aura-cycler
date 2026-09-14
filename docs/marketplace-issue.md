@@ -1,6 +1,7 @@
-# Marketplace submission template
+# Marketplace submission draft
 
-Submit via an issue on the Omarchy plugins repository or [omarchy.org](https://omarchy.org):
+Use this body when editing the existing marketplace issue after the hardened
+repository commit is pushed.
 
 Title: `[Plugin]: Aura Material Cycler`
 
@@ -15,11 +16,15 @@ Appearance
 
 ### Tags
 
-theming, wallpaper, material-you, aura, asus, rgb, quickshell
+bar, quickshell, hyprland
+
+### Suggest a missing tag
+
+_No response_
 
 ### Maintainer notes
 
-Dynamic wallpaper cycler with on-device Material You theme generation (Aether CIELAB perceptual engine) and real-time ASUS Aura RGB keyboard backlight synchronization. Supports Unsplash API authentication and Wallhaven 4K catalogs. Includes Quickshell top bar status widget with pause/play and speed control. Managed under systemd user supervisor for 100% update/reboot persistence. MIT licensed.
+Dynamic wallpaper cycler with local Material You palette extraction, optional Open-Meteo weather adaptation, click-through atmospheric effects, and optional ASUS Aura keyboard synchronization. New installs default to local/offline rotation every five minutes; online 4K downloads and systemd supervision are opt-in. The plugin uses an owner-only daemon lock and caches palette results by image path and modification time. MIT licensed.
 
 ### Submission checklist
 

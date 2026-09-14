@@ -6,6 +6,8 @@ import Quickshell.Io
 Item {
   id: root
 
+  readonly property string cliPath: Qt.resolvedUrl("bin/aura-cycler").toString().replace("file://", "")
+
   property var shell: null
   property var manifest: null
   property bool effectsEnabled: true
@@ -73,6 +75,7 @@ Item {
   onIsDayChanged: resolveEffect()
 
   Component.onCompleted: {
+    startProc.running = true
     statusTimer.running = true
     refreshStatus()
   }
@@ -91,7 +94,7 @@ Item {
 
   Process {
     id: statusProc
-    command: ["aura-cycler", "status-json"]
+    command: [root.cliPath, "status-json"]
     running: false
     stdout: StdioCollector {
       waitForEnd: true
@@ -116,6 +119,12 @@ Item {
         } catch(e) {}
       }
     }
+  }
+
+  Process {
+    id: startProc
+    command: [root.cliPath, "start"]
+    running: false
   }
 
   Variants {

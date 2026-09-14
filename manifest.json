@@ -21,10 +21,10 @@
     "category": "Appearance",
     "defaultSection": "right",
     "defaults": {
-      "interval": 30,
+      "interval": 300,
       "weatherSync": true,
       "blur": 12,
-      "streamOnline": true
+      "streamOnline": false
     },
     "schema": [
       {
@@ -34,8 +34,8 @@
         "min": 15,
         "max": 3600,
         "step": 15,
-        "defaultValue": 30,
-        "description": "Time in seconds between automatic wallpaper rotations."
+        "defaultValue": 300,
+        "description": "Time in seconds between automatic wallpaper rotations. New installs default to 5 minutes to reduce CPU/GPU and network load."
       },
       {
         "key": "weatherSync",
@@ -58,8 +58,8 @@
         "key": "streamOnline",
         "type": "boolean",
         "label": "Stream Fresh 4K Online",
-        "defaultValue": true,
-        "description": "Download authentic 4K/UHD wallpapers from Wallhaven and Bing archives."
+        "defaultValue": false,
+        "description": "Download authentic 4K/UHD wallpapers from Wallhaven and Bing archives when explicitly enabled."
       }
     ]
   }

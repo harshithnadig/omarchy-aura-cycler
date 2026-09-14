@@ -1,15 +1,15 @@
 [Unit]
-Description=Material You Dynamic Wallpaper and ASUS Aura Sync
+Description=Aura Material Cycler - Material You Wallpaper and ASUS Aura Sync
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/home/harshith/.local/bin/material-cycler run
+ExecStart=%h/.config/omarchy/plugins/harshith.aura-cycler/bin/aura-cycler run
 Restart=always
-RestartSec=5
-Environment=PATH=/home/harshith/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=XDG_RUNTIME_DIR=/run/user/1000
+RestartSec=10
+Nice=10
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=graphical-session.target default.target
