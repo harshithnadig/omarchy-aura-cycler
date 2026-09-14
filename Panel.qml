@@ -14,6 +14,7 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
+  property var service: null
   readonly property var barIdentity: hostWidget || root
 
   property bool active: true
@@ -31,6 +32,12 @@ Panel {
   property string weatherCity: "Bengaluru"
   property bool weatherSync: true
   property bool streamOnline: true
+
+  // Atmospheric screen weather effects
+  property bool screenEffects: true
+  property string screenEffectsMode: "auto"
+  property string screenEffectsLayer: "bottom"
+  property real screenEffectsIntensity: 1.0
 
   // Folders state
   property var customFolders: []
@@ -103,6 +110,10 @@ Panel {
           root.streamOnline = d.stream_online
           root.customFolders = d.custom_folders || []
           root.wallpapersCount = d.wallpapers_count || 0
+          if (d.screen_effects !== undefined) root.screenEffects = d.screen_effects
+          if (d.screen_effects_mode) root.screenEffectsMode = d.screen_effects_mode
+          if (d.screen_effects_layer) root.screenEffectsLayer = d.screen_effects_layer
+          if (d.screen_effects_intensity !== undefined) root.screenEffectsIntensity = d.screen_effects_intensity
         } catch(e) {}
       }
     }
@@ -340,6 +351,221 @@ Panel {
               color: Qt.darker(root.fg, 1.3)
               font.family: root.fontFam
               font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        // 2b. Atmospheric Screen Weather Effects Card
+        Rectangle {
+          width: parent.width
+          implicitHeight: effectsCardCol.implicitHeight + Style.space(18)
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.05)
+          border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
+          border.width: 1
+
+          Column {
+            id: effectsCardCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(10)
+            spacing: Style.space(8)
+
+            // Header row with toggle
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(effectsTitleRow.implicitHeight, effectsToggleBtn.implicitHeight)
+
+              Row {
+                id: effectsTitleRow
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(8)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "󰖗"
+                  color: root.accent
+                  font.family: root.fontFam
+                  font.pixelSize: Style.font.title
+                }
+
+                Column {
+                  spacing: Style.space(1)
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "On-Screen Atmospheric Weather Effects"
+                    color: root.fg
+                    font.family: root.fontFam
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "Falling raindrops, snowflakes, lightning, and sunbeams on screen"
+                    color: Qt.darker(root.fg, 1.4)
+                    font.family: root.fontFam
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+
+              Rectangle {
+                id: effectsToggleBtn
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: effectsToggleText.implicitWidth + Style.space(14)
+                height: Style.space(26)
+                radius: Style.space(13)
+                color: root.screenEffects ? root.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.1)
+
+                Text {
+                  id: effectsToggleText
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: root.screenEffects ? "󰐊 Active" : "󰏤 Off"
+                  color: root.screenEffects ? "#0A0E0A" : root.fg
+                  font.family: root.fontFam
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.screenEffects = !root.screenEffects
+                    if (root.service) root.service.effectsEnabled = root.screenEffects
+                    root.runCmd(["aura-cycler", "effects", "toggle"])
+                  }
+                }
+              }
+            }
+
+            // Mode Selector Pills
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: [
+                  { id: "auto", label: "󰖐 Auto (Live)" },
+                  { id: "rain", label: "󰖗 Raindrops" },
+                  { id: "thunder", label: "󰖓 Thunder" },
+                  { id: "snow", label: "󰖘 Snow" },
+                  { id: "sun", label: "󰖙 Sunbeams" },
+                  { id: "stars", label: "󰖔 Stars" },
+                  { id: "fog", label: "󰖑 Mist" }
+                ]
+
+                Rectangle {
+                  width: modeLabel.implicitWidth + Style.space(14)
+                  height: Style.space(24)
+                  radius: Style.space(12)
+                  color: root.screenEffectsMode === modelData.id ? root.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                  border.color: root.screenEffectsMode === modelData.id ? root.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.15)
+                  border.width: 1
+
+                  Text {
+                    id: modeLabel
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: modelData.label
+                    color: root.screenEffectsMode === modelData.id ? "#0A0E0A" : root.fg
+                    font.family: root.fontFam
+                    font.pixelSize: Style.font.caption
+                    font.bold: root.screenEffectsMode === modelData.id
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.screenEffectsMode = modelData.id
+                      if (root.service) {
+                        root.service.weatherMode = modelData.id
+                        root.service.resolveEffect()
+                      }
+                      root.runCmd(["aura-cycler", "effects", "mode", modelData.id])
+                    }
+                  }
+                }
+              }
+            }
+
+            // Placement Layer & Intensity Row
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              // Layer placement toggle
+              Rectangle {
+                width: (parent.width - Style.space(8)) * 0.58
+                height: Style.space(28)
+                radius: Style.cornerRadius
+                color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.15)
+                border.width: 1
+
+                Row {
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+                  Text {
+                    textFormat: Text.PlainText
+                    text: root.screenEffectsLayer === "top" ? "󰍹 Layer: Over Windows" : "󰉋 Layer: Wallpaper (Behind)"
+                    color: root.fg
+                    font.family: root.fontFam
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var nextLayer = root.screenEffectsLayer === "top" ? "bottom" : "top"
+                    root.screenEffectsLayer = nextLayer
+                    if (root.service) root.service.overlayLayer = nextLayer
+                    root.runCmd(["aura-cycler", "effects", "layer"])
+                  }
+                }
+              }
+
+              // Intensity cycle
+              Rectangle {
+                width: (parent.width - Style.space(8)) * 0.42
+                height: Style.space(28)
+                radius: Style.cornerRadius
+                color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.15)
+                border.width: 1
+
+                Row {
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "Intensity: " + (root.screenEffectsIntensity === 0.5 ? "Subtle" : (root.screenEffectsIntensity === 1.5 ? "Dramatic" : "Normal"))
+                    color: root.fg
+                    font.family: root.fontFam
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var next = root.screenEffectsIntensity === 0.5 ? "1.0" : (root.screenEffectsIntensity === 1.0 ? "1.5" : "0.5")
+                    root.screenEffectsIntensity = parseFloat(next)
+                    if (root.service) root.service.effectIntensity = root.screenEffectsIntensity
+                    root.runCmd(["aura-cycler", "effects", "intensity", next])
+                  }
+                }
+              }
             }
           }
         }

@@ -21,6 +21,8 @@ BarWidget {
   property string weatherCondition: "Light Drizzle"
   property bool weatherSync: true
 
+  readonly property var service: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
+
   function injectPanel() {
     var target = panelLoader.item
     if (!target) return
@@ -28,6 +30,7 @@ BarWidget {
     if ("settings" in target) target.settings = root.settings
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
+    if ("service" in target) target.service = root.service
   }
 
   function open() { if (panelLoader.item) panelLoader.item.open() }

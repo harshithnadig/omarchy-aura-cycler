@@ -2,19 +2,22 @@
   "schemaVersion": 1,
   "id": "harshith.aura-cycler",
   "name": "Aura Material Cycler",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "harshith",
   "license": "MIT",
-  "description": "Live wallpaper cycler with Material You adaptive palette extraction, real-time live weather adaptation, and ASUS Aura keyboard backlight synchronization.",
+  "description": "Live wallpaper cycler with Material You palette extraction, on-screen atmospheric weather effects (raindrops, snowflakes, thunder, sunbeams), and ASUS Aura keyboard backlight synchronization.",
   "kinds": [
+    "service",
     "bar-widget"
   ],
+  "keepLoaded": true,
   "entryPoints": {
+    "service": "WeatherService.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Aura Cycler",
-    "description": "Dynamic Material You wallpaper, Omarchy color, weather atmosphere, and ASUS Aura sync",
+    "description": "Dynamic Material You wallpaper, weather atmosphere, screen particles, and ASUS Aura sync",
     "category": "Appearance",
     "defaultSection": "right",
     "defaults": {
