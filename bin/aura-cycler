@@ -898,11 +898,17 @@ def apply_next_wallpaper():
 
     log(f"=== Applying New Wallpaper: {os.path.basename(chosen)} ===")
 
-    # 3. Apply wallpaper atomically via omarchy
+    # 3. Apply wallpaper atomically by updating Omarchy background symlink
+    current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
     try:
-        subprocess.run(["omarchy-theme-set-wallpaper", chosen], check=True, timeout=5)
+        os.makedirs(os.path.dirname(current_bg_link), exist_ok=True)
+        tmp_link = current_bg_link + ".tmp"
+        if os.path.lexists(tmp_link):
+            os.unlink(tmp_link)
+        os.symlink(chosen, tmp_link)
+        os.replace(tmp_link, current_bg_link)
     except Exception as e:
-        log(f"Wallpaper set error: {e}")
+        log(f"Background symlink error: {e}")
 
     # 4. Extract focal colors and complete Material You palette via offline ML model
     focal_accent, palette = extract_focal_colors_offline(chosen)
@@ -918,7 +924,7 @@ def apply_next_wallpaper():
     generated = regenerate_derived_theme_files(colors_raw)
     write_palette_state(chosen, accent_hex, palette, generated)
 
-    # 5. Apply complete theme live to Omarchy shell
+    # 5. Apply complete theme and background transition live to Omarchy shell
     if colors_raw:
         try:
             b64 = base64.b64encode(colors_raw.encode()).decode()
@@ -928,7 +934,9 @@ def apply_next_wallpaper():
                 with open(shell_path, "r", encoding="utf-8") as f:
                     shell_raw = f.read()
             shell_b64 = base64.b64encode(shell_raw.encode()).decode()
-            subprocess.run(["omarchy-shell", "shell", "applyTheme", b64, shell_b64],
+            subprocess.run(["omarchy-shell", "-q", "background", "themeTransition", "", chosen, chosen, b64, shell_b64],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            subprocess.run(["omarchy-shell", "-q", "shell", "applyTheme", b64, shell_b64],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
         except Exception:
             pass
