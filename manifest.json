@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "harshith.aura-cycler",
   "name": "Aura Material Cycler",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "harshith",
   "license": "MIT",
-  "description": "Live wallpaper cycler with Material You adaptive palette extraction, Omarchy shell recoloring, and ASUS Aura keyboard backlight synchronization.",
+  "description": "Live wallpaper cycler with Material You adaptive palette extraction, real-time live weather adaptation, and ASUS Aura keyboard backlight synchronization.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,8 +14,50 @@
   },
   "barWidget": {
     "displayName": "Aura Cycler",
-    "description": "Dynamic Material You wallpaper, Omarchy color, and ASUS Aura sync",
+    "description": "Dynamic Material You wallpaper, Omarchy color, weather atmosphere, and ASUS Aura sync",
     "category": "Appearance",
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "interval": 30,
+      "weatherSync": true,
+      "blur": 12,
+      "streamOnline": true
+    },
+    "schema": [
+      {
+        "key": "interval",
+        "type": "integer",
+        "label": "Rotation Interval (seconds)",
+        "min": 15,
+        "max": 3600,
+        "step": 15,
+        "defaultValue": 30,
+        "description": "Time in seconds between automatic wallpaper rotations."
+      },
+      {
+        "key": "weatherSync",
+        "type": "boolean",
+        "label": "Weather-Adaptive Wallpapers",
+        "defaultValue": true,
+        "description": "Automatically match wallpaper theme and lighting to current outdoor weather conditions."
+      },
+      {
+        "key": "blur",
+        "type": "integer",
+        "label": "Liquid Glass Blur (px)",
+        "min": 0,
+        "max": 24,
+        "step": 1,
+        "defaultValue": 12,
+        "description": "Compositor background blur intensity in pixels."
+      },
+      {
+        "key": "streamOnline",
+        "type": "boolean",
+        "label": "Stream Fresh 4K Online",
+        "defaultValue": true,
+        "description": "Download authentic 4K/UHD wallpapers from Wallhaven and Bing archives."
+      }
+    ]
   }
 }

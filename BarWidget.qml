@@ -16,6 +16,39 @@ BarWidget {
   property int blurPx: 12
   property string currentAccent: "#00FF66"
   property string currentWallpaper: ""
+  property string weatherIcon: "󰖗"
+  property int weatherTemp: 22
+  property string weatherCondition: "Light Drizzle"
+  property bool weatherSync: true
+
+  function injectPanel() {
+    var target = panelLoader.item
+    if (!target) return
+    if ("bar" in target) target.bar = root.bar
+    if ("settings" in target) target.settings = root.settings
+    if ("anchorItem" in target) target.anchorItem = button
+    if ("hostWidget" in target) target.hostWidget = root
+  }
+
+  function open() { if (panelLoader.item) panelLoader.item.open() }
+  function close() { if (panelLoader.item) panelLoader.item.close() }
+  function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+
+  onBarChanged: injectPanel()
+  onSettingsChanged: injectPanel()
+
+  Component.onCompleted: refreshState()
+
+  Loader {
+    id: panelLoader
+    active: true
+    source: Qt.resolvedUrl("Panel.qml")
+    visible: false
+    onLoaded: {
+      root.injectPanel()
+      Qt.callLater(root.injectPanel)
+    }
+  }
 
   function refreshState() {
     if (!stateProc.running) stateProc.running = true
@@ -33,8 +66,6 @@ BarWidget {
     if (!speedProc.running) speedProc.running = true
   }
 
-  Component.onCompleted: refreshState()
-
   Timer {
     interval: 3000
     running: true
@@ -44,36 +75,48 @@ BarWidget {
 
   Process {
     id: stateProc
-    command: ["sh", "-c", "python3 -c '\nimport os, re, subprocess\nrunning = subprocess.run([\"systemctl\", \"--user\", \"is-active\", \"--quiet\", \"material-cycler.service\"]).returncode == 0\nint_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\ninterval = 30\nif os.path.exists(int_file):\n    try: interval = int(open(int_file).read().strip())\n    except: pass\nblur_file = os.path.expanduser(\"~/.local/state/omarchy/glass-blur.txt\")\nblur = 12\nif os.path.exists(blur_file):\n    try: blur = int(open(blur_file).read().strip())\n    except: pass\nlog_file = os.path.expanduser(\"~/.local/state/omarchy/material-cycler.log\")\naccent = \"#00FF66\"\nwp = \"\"\nif os.path.exists(log_file):\n    lines = open(log_file).readlines()[-30:]\n    for l in reversed(lines):\n        m = re.search(r\"Theme Accent: #([0-9A-Fa-f]{6})\", l)\n        if m and accent == \"#00FF66\": accent = \"#\" + m.group(1)\n        m2 = re.search(r\"Applying New Wallpaper: (.+)\", l)\n        if m2 and not wp: wp = m2.group(1).replace(\"===\", \"\").strip()\nprint(f\"{running}|{interval}|{accent}|{wp}|{blur}\")\n'"]
-    stdout: SplitParser {
-      onRead: function(data) {
-        var parts = data.trim().split("|")
-        if (parts.length >= 4) {
-          root.active = (parts[0] === "True")
-          root.intervalSec = parseInt(parts[1]) || 30
-          root.currentAccent = parts[2] || "#00FF66"
-          root.currentWallpaper = parts[3] || ""
-          if (parts.length >= 5) root.blurPx = parseInt(parts[4]) || 12
-        }
+    command: ["aura-cycler", "status-json"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var cleanText = text.trim()
+          var firstBrace = cleanText.indexOf("{")
+          if (firstBrace !== -1) {
+            cleanText = cleanText.substring(firstBrace)
+          }
+          var d = JSON.parse(cleanText)
+          root.active = d.active
+          root.intervalSec = d.interval
+          root.blurPx = d.blur
+          root.currentAccent = d.accent || "#00FF66"
+          root.currentWallpaper = d.wallpaper_name || ""
+          if (d.weather) {
+            root.weatherTemp = d.weather.temp
+            root.weatherCondition = d.weather.condition
+            root.weatherIcon = d.weather.icon
+          }
+          root.weatherSync = d.weather_sync
+        } catch(e) {}
       }
     }
   }
 
   Process {
     id: nextProc
-    command: ["material-cycler", "next"]
+    command: ["aura-cycler", "next"]
     onExited: root.refreshState()
   }
 
   Process {
     id: toggleProc
-    command: ["sh", "-c", "if systemctl --user is-active --quiet material-cycler.service; then systemctl --user stop material-cycler.service; else systemctl --user start material-cycler.service; fi"]
+    command: ["aura-cycler", "toggle"]
     onExited: root.refreshState()
   }
 
   Process {
     id: speedProc
-    command: ["sh", "-c", "python3 -c '\nimport os\ncur = 30\nf = os.path.expanduser(\"~/.local/state/omarchy/material-cycler-interval.txt\")\nif os.path.exists(f):\n    try: cur = int(open(f).read().strip())\n    except: pass\nsteps = [15, 30, 60, 300, 600]\nnext_val = steps[(steps.index(cur) + 1) % len(steps)] if cur in steps else 30\nos.system(f\"material-cycler interval {next_val}\")\n'"]
+    command: ["aura-cycler", "cycle-interval"]
     onExited: root.refreshState()
   }
 
@@ -88,33 +131,31 @@ BarWidget {
     useActiveColor: true
     active: root.active
     activeColor: root.currentAccent
-    tooltipText: "Apple Liquid Glass & Aura Cycler: " + (root.active ? "Active" : "Paused")
+    tooltipText: "Aura Material Cycler: " + (root.active ? "Active" : "Paused")
       + "\n• Rotation: " + root.intervalSec + "s"
+      + "\n• Outdoor Weather: " + root.weatherIcon + " " + root.weatherTemp + "°C (" + root.weatherCondition + ")"
+      + "\n• Weather Sync: " + (root.weatherSync ? "Enabled (Adaptive)" : "Disabled")
       + "\n• Liquid Glass Blur: " + root.blurPx + "px"
-      + "\n• Wallpaper: " + (root.currentWallpaper ? root.currentWallpaper : "Active")
+      + "\n• Active Wallpaper: " + (root.currentWallpaper ? root.currentWallpaper : "Active")
       + "\n• Monet Accent: " + root.currentAccent
-      + "\n\n⌨ Keyboard Shortcuts (Mouse-Free):"
-      + "\n  • Super + B: Next Wallpaper & Sync"
-      + "\n  • Super + Alt + P: Pause / Resume"
-      + "\n  • Super + Alt + I: Cycle Speed (" + root.intervalSec + "s)"
-      + "\n  • Super + Shift + [: Blur Slider Down (-3px)"
-      + "\n  • Super + Shift + ]: Blur Slider Up (+3px)"
-      + "\n  • Super + Alt + B: Toggle Blur On/Off"
-      + "\n\nMouse (Optional): Left click=Next | Right click=Toggle"
+      + "\n\nLeft Click: Open Settings Panel (Folders, Timeout, Weather, Blur)"
+      + "\nRight Click: Pause / Resume"
+      + "\nMiddle Click: Cycle Speed (" + root.intervalSec + "s)"
+      + "\nWheel Scroll: Fine-tune rotation timer"
 
     onPressed: function(b) {
-      if (b === Qt.LeftButton) root.nextWallpaper()
+      if (b === Qt.LeftButton) root.togglePanel()
       else if (b === Qt.RightButton) root.toggleCycle()
       else if (b === Qt.MiddleButton) root.cycleSpeed()
     }
     onWheelMoved: function(delta) {
-      var steps = [15, 30, 60, 300, 600]
+      var steps = [15, 30, 60, 300, 600, 1800, 3600]
       var cur = root.intervalSec
       var idx = steps.indexOf(cur)
       if (idx === -1) idx = 1
       var nextIdx = delta > 0 ? Math.min(steps.length - 1, idx + 1) : Math.max(0, idx - 1)
       if (nextIdx !== idx) {
-        root.bar.run("material-cycler interval " + steps[nextIdx])
+        root.bar.run("aura-cycler interval " + steps[nextIdx])
         root.refreshState()
       }
     }
