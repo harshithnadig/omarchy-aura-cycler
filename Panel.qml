@@ -31,7 +31,7 @@ Panel {
   property int weatherTemp: 22
   property string weatherCondition: "Light Drizzle"
   property string weatherIcon: "󰖗"
-  property string weatherCity: "Bengaluru"
+  property string weatherCity: "Local"
   property bool weatherSync: true
   property bool streamOnline: false
 
@@ -233,7 +233,7 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              text: "Dynamic Material You & ASUS Aura Sync"
+              text: "Dynamic Material You & Ambient Lighting"
               color: Qt.darker(root.fg, 1.4)
               font.family: root.fontFam
               font.pixelSize: Style.font.caption
@@ -507,7 +507,7 @@ Panel {
               width: parent.width
               wrapMode: Text.WordWrap
               textFormat: Text.PlainText
-              text: root.weatherSync ? "Wallpaper selection and ASUS Aura RGB dynamically reflect live weather outside." : "Weather sync is disabled. Wallpapers rotate from all standard curated topics."
+              text: root.weatherSync ? "Wallpaper selection and keyboard lighting dynamically reflect live weather outside." : "Weather sync is disabled. Wallpapers rotate from all standard curated topics."
               color: Qt.darker(root.fg, 1.3)
               font.family: root.fontFam
               font.pixelSize: Style.font.caption
@@ -816,7 +816,7 @@ Panel {
               }
             }
 
-            // ASUS Aura Hardware Bar
+            // Keyboard Backlight Hardware Bar
             Item {
               width: parent.width
               implicitHeight: auraHardwareRow.implicitHeight
@@ -829,7 +829,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "󰌌 ASUS Aura Keyboard:"
+                  text: "󰌌 Keyboard Backlight:"
                   color: root.fg
                   font.family: root.fontFam
                   font.pixelSize: Style.font.caption

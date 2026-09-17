@@ -3,9 +3,9 @@
   "id": "harshith.aura-cycler",
   "name": "Aura Material Cycler",
   "version": "1.3.0",
-  "author": "harshith",
+  "author": "Aura Project Contributors",
   "license": "MIT",
-  "description": "Adaptive desktop environment with Material You wallpaper palettes, atmospheric weather effects, ASUS Aura synchronization, and GPU-aware protection against resource pressure.",
+  "description": "Adaptive desktop environment with Material You wallpaper palettes, atmospheric weather effects, ambient keyboard lighting synchronization, and GPU-aware protection against resource pressure.",
   "kinds": [
     "service",
     "bar-widget"
@@ -17,7 +17,7 @@
   },
   "barWidget": {
     "displayName": "Aura Cycler",
-    "description": "Dynamic Material You wallpaper, weather atmosphere, ASUS Aura sync, and GPU-aware performance protection",
+    "description": "Dynamic Material You wallpaper, weather atmosphere, ambient keyboard sync, and GPU-aware performance protection",
     "category": "Appearance",
     "defaultSection": "right",
     "defaults": {

@@ -1,5 +1,5 @@
 [Unit]
-Description=Aura Material Cycler - Material You Wallpaper and ASUS Aura Sync
+Description=Aura Material Cycler - Material You Wallpaper and Ambient Keyboard Sync
 PartOf=graphical-session.target
 After=graphical-session.target
 

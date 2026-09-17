@@ -583,10 +583,10 @@ def get_location():
             data = read_capped_json(resp)
             if data.get("status") == "success":
                 loc = {
-                    "lat": data.get("lat", 12.9753),
-                    "lon": data.get("lon", 77.591),
-                    "city": data.get("city", "Bengaluru"),
-                    "country": data.get("country", "India"),
+                    "lat": float(data.get("lat", 0.0)),
+                    "lon": float(data.get("lon", 0.0)),
+                    "city": str(data.get("city", "Local")),
+                    "country": str(data.get("country", "")),
                     "timestamp": now
                 }
                 cfg["location_cache"] = loc
@@ -595,7 +595,7 @@ def get_location():
     except Exception as e:
         log(f"Location lookup notice: {e}")
 
-    return {"lat": 12.9753, "lon": 77.591, "city": "Bengaluru", "country": "India", "timestamp": now}
+    return {"lat": 0.0, "lon": 0.0, "city": "Local", "country": "", "timestamp": now}
 
 def get_weather(force=False):
     cfg = load_config()
@@ -605,9 +605,9 @@ def get_weather(force=False):
         return cached
 
     loc = get_location()
-    lat = loc.get("lat", 12.9753)
-    lon = loc.get("lon", 77.591)
-    city = loc.get("city", "Bengaluru")
+    lat = loc.get("lat", 0.0)
+    lon = loc.get("lon", 0.0)
+    city = loc.get("city", "Local")
 
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
@@ -798,15 +798,134 @@ def set_interval(val):
     save_config(cfg)
     log(f"Interval set to {val}s")
 
+def find_keyboard_backlight_device():
+    """
+    Locates hardware keyboard backlight sysfs path across laptop manufacturers:
+    - Apple Silicon (MacBook on Asahi Linux): kbd_backlight
+    - Apple Intel (MacBook on Linux): smc::kbd_backlight, apple::kbd_backlight
+    - Lenovo (ThinkPad): tpacpi::kbd_backlight
+    - Dell: dell::kbd_backlight
+    - Framework / Chromebook: chromeos::kbd_backlight, framework::kbd_backlight
+    - System76: system76::kbd_backlight, system76_acpi::kbd_backlight
+    - ASUS: asus::kbd_backlight
+    - Generic: any /sys/class/leds/*kbd* or *keyboard* device
+    """
+    leds_base = "/sys/class/leds"
+    if not os.path.exists(leds_base):
+        return None
+
+    priority_names = [
+        "kbd_backlight",
+        "smc::kbd_backlight",
+        "apple::kbd_backlight",
+        "asus::kbd_backlight",
+        "tpacpi::kbd_backlight",
+        "dell::kbd_backlight",
+        "system76::kbd_backlight",
+        "system76_acpi::kbd_backlight",
+        "chromeos::kbd_backlight",
+    ]
+    for name in priority_names:
+        p = os.path.join(leds_base, name)
+        if os.path.exists(p):
+            return p
+
+    try:
+        for entry in sorted(os.listdir(leds_base)):
+            lower = entry.lower()
+            if ("kbd" in lower or "keyboard" in lower) and "scrolllock" not in lower and "capslock" not in lower and "numlock" not in lower:
+                return os.path.join(leds_base, entry)
+    except OSError:
+        pass
+    return None
+
 def get_keyboard_brightness():
+    # 1. Try asusctl if available
     try:
         res = subprocess.run(["asusctl", "leds", "get"], capture_output=True, text=True, timeout=2)
         m = re.search(r"brightness:\s*(\w+)", res.stdout, re.IGNORECASE)
         if m:
             return m.group(1).lower()
-    except Exception:
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         pass
+
+    # 2. Try sysfs device (Apple, ThinkPad, Dell, Framework, System76, generic)
+    dev = find_keyboard_backlight_device()
+    if dev:
+        try:
+            with open(os.path.join(dev, "brightness"), "r") as f:
+                cur = int(f.read().strip())
+            with open(os.path.join(dev, "max_brightness"), "r") as f:
+                max_b = int(f.read().strip())
+            if cur == 0:
+                return "off"
+            if max_b > 0:
+                ratio = cur / max_b
+                if ratio <= 0.35:
+                    return "low"
+                elif ratio <= 0.70:
+                    return "med"
+                else:
+                    return "high"
+        except (OSError, ValueError):
+            pass
+
+    # 3. Try brightnessctl
+    try:
+        res_cur = subprocess.run(["brightnessctl", "--device=*kbd*", "get"], capture_output=True, text=True, timeout=2)
+        res_max = subprocess.run(["brightnessctl", "--device=*kbd*", "max"], capture_output=True, text=True, timeout=2)
+        if res_cur.returncode == 0 and res_max.returncode == 0:
+            cur = int(res_cur.stdout.strip())
+            max_b = int(res_max.stdout.strip())
+            if cur == 0:
+                return "off"
+            if max_b > 0:
+                ratio = cur / max_b
+                if ratio <= 0.35:
+                    return "low"
+                elif ratio <= 0.70:
+                    return "med"
+                else:
+                    return "high"
+    except (FileNotFoundError, OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
     return None
+
+def set_keyboard_brightness(level):
+    level = str(level).strip().lower()
+
+    # 1. Try asusctl if available
+    try:
+        res = subprocess.run(["asusctl", "leds", "set", level], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0:
+            return True
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+
+    # 2. Try brightnessctl
+    try:
+        val = "0" if level == "off" else ("33%" if level == "low" else ("66%" if level == "med" else "100%"))
+        res = subprocess.run(["brightnessctl", "--device=*kbd*", "set", val], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0:
+            return True
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+
+    # 3. Try direct sysfs write
+    dev = find_keyboard_backlight_device()
+    if dev:
+        try:
+            with open(os.path.join(dev, "max_brightness"), "r") as f:
+                max_b = int(f.read().strip())
+            target = 0 if level == "off" else (max(1, max_b // 3) if level == "low" else (max(1, (2 * max_b) // 3) if level == "med" else max_b))
+            with open(os.path.join(dev, "brightness"), "w") as f:
+                f.write(str(target))
+            return True
+        except (OSError, PermissionError):
+            pass
+
+    return False
 
 def set_keyboard_color(hex_code):
     global last_keyboard_level, last_keyboard_color
@@ -814,16 +933,17 @@ def set_keyboard_color(hex_code):
     if not re.fullmatch(r"[0-9A-F]{6}", clean_hex):
         log(f"Skipped invalid keyboard color: {hex_code}")
         return False
+
     try:
         level = get_keyboard_brightness()
         if level == "off":
             last_keyboard_level = "off"
             last_keyboard_color = clean_hex
-            log("Keyboard backlight is OFF; preserving the manual Off state and skipping Aura color write.")
+            log("Keyboard backlight is OFF; preserving manual Off state and skipping backlight color write.")
             return False
         if level is None:
-            log("Keyboard color sync skipped because ASUS keyboard state is unavailable.")
             return False
+
         if level == last_keyboard_level and clean_hex == str(last_keyboard_color or "").upper():
             return True
 
@@ -835,29 +955,48 @@ def set_keyboard_color(hex_code):
                 log("Keyboard sync locked by another write; skipping.")
                 return False
             try:
-                result = subprocess.run(
-                    ["asusctl", "aura", "effect", "static", "--colour", clean_hex],
-                    capture_output=True, text=True, timeout=3
-                )
-                if result.returncode != 0:
-                    log(f"asusctl static returned non-zero ({result.returncode}): {result.stderr.strip() or result.stdout.strip()}")
-                    return False
+                synced = False
+
+                # 1. Try asusctl for RGB if available
+                try:
+                    res = subprocess.run(
+                        ["asusctl", "aura", "effect", "static", "--colour", clean_hex],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    if res.returncode == 0:
+                        synced = True
+                        log(f"Keyboard RGB static color successfully synced to #{clean_hex} at brightness '{level}'.")
+                except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+                    pass
+
+                # 2. Try OpenRGB if available
+                if not synced:
+                    try:
+                        res = subprocess.run(
+                            ["openrgb", "--color", clean_hex, "--mode", "static"],
+                            capture_output=True, text=True, timeout=3
+                        )
+                        if res.returncode == 0:
+                            synced = True
+                            log(f"OpenRGB keyboard color successfully synced to #{clean_hex}.")
+                    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+                        pass
+
+                # 3. If hardware has single-color/monochrome backlight (Apple MacBooks, ThinkPads, Dells, Framework)
+                if not synced:
+                    log(f"Keyboard backlight active at level '{level}' (monochrome LED hardware; color #{clean_hex} applied to desktop theme).")
+                    synced = True
+
                 last_keyboard_level = level
                 last_keyboard_color = clean_hex
-                log(f"ASUS Aura static color successfully synced to #{clean_hex} at brightness '{level}'.")
-                return True
+                return synced
             finally:
                 try:
                     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                 except OSError:
                     pass
-    except subprocess.TimeoutExpired:
-        log("asusctl command timed out.")
-        return False
-    except FileNotFoundError:
-        return False
     except Exception as e:
-        log(f"ASUS Aura sync exception: {e}")
+        log(f"Keyboard backlight sync notice: {e}")
         return False
 
 def get_blur():
@@ -1424,9 +1563,9 @@ def apply_next_wallpaper():
     except Exception:
         pass
 
-    # 7. ASUS Aura Keyboard Backlight Sync
+    # 7. Ambient Keyboard Backlight Sync
     keyboard_hex = accent_hex or "00FF66"
-    log(f"Canonical Accent: #{accent_hex} | ASUS Keyboard RGB: #{keyboard_hex}")
+    log(f"Canonical Accent: #{accent_hex} | Keyboard RGB: #{keyboard_hex}")
     set_keyboard_color(keyboard_hex)
 
     # 8. Live app sync: Chrome/Brave/Chromium policies, terminals, editors, and desktop apps
@@ -1568,15 +1707,13 @@ def keyboard_policy(mode):
     """Apply an explicit user keyboard action without blocking later manual changes."""
     mode = str(mode or "").strip().lower()
     if mode in ("off", "lock"):
-        try:
-            subprocess.run(["asusctl", "leds", "set", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-            print("Keyboard LEDs set to Off; wallpaper sync will not write while they are Off.")
-        except FileNotFoundError:
-            print("asusctl is not installed; ASUS keyboard control is unavailable.")
-        except subprocess.TimeoutExpired:
-            print("asusctl timed out; keyboard state was not changed.")
+        success = set_keyboard_brightness("off")
+        if success:
+            print("Keyboard backlight set to Off; wallpaper sync will not write while it is Off.")
+        else:
+            print("Could not turn off keyboard backlight (no supported backlight driver found or permissions needed).")
     elif mode in ("allow", "on", "unlock"):
-        print("Keyboard sync allows manual brightness changes; wallpaper sync never changes brightness.")
+        print("Keyboard backlight sync enabled; wallpaper sync respects your manual brightness.")
     else:
         print("Usage: aura-cycler keyboard {off|allow}")
 
@@ -1685,12 +1822,12 @@ def status_json():
         "wallpaper": current_wp,
         "wallpaper_name": os.path.basename(current_wp) if current_wp else "Active",
         "accent": accent,
-        "keyboard_brightness": get_keyboard_brightness() or "unknown",
+        "keyboard_brightness": get_keyboard_brightness() or "unavailable",
         "weather": {
             "temp": weather_data.get("temp", 22),
             "condition": weather_data.get("condition", "Clear"),
             "icon": weather_data.get("icon", "󰖙"),
-            "city": weather_data.get("city", "Bengaluru"),
+            "city": weather_data.get("city", "Local"),
             "code": weather_data.get("code", 0),
             "is_day": weather_data.get("is_day", True)
         },
@@ -1763,11 +1900,14 @@ def status_daemon():
     cfg = load_config()
     weather = get_weather()
     status_str = "active (running)" if (daemon_is_active() or systemd_is_active()) else "inactive (stopped)"
+    kbd = get_keyboard_brightness()
+    kbd_str = f"brightness '{kbd}' (syncs only when on)" if kbd else "not detected / off"
     print(f"● aura-cycler: {status_str} | Interval: {get_interval()}s | Blur: {get_blur()}px")
     print(f"  Available wallpaper pool: {len(wallpapers)} wallpapers across {len(cfg.get('custom_folders', []))} folders")
-    print(f"  Live Weather: {weather.get('icon')} {weather.get('temp')}°C ({weather.get('condition')}, {weather.get('city')})")
+    if weather:
+        print(f"  Live Weather: {weather.get('icon', '')} {weather.get('temp', '')}°C ({weather.get('condition', '')}, {weather.get('city', '')})")
     print(f"  Weather sync: {'Enabled' if cfg.get('weather_sync', True) else 'Disabled'} | Screen atmospheric particles: {'Enabled (' + cfg.get('screen_effects_mode', 'auto') + ')' if cfg.get('screen_effects', True) else 'Disabled'}")
-    print(f"  ASUS Keyboard: brightness '{get_keyboard_brightness()}' (syncs only when on)")
+    print(f"  Keyboard Backlight: {kbd_str}")
 
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else "start"

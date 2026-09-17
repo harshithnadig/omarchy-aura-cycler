@@ -3,7 +3,7 @@
 [![Omarchy Plugin](https://img.shields.io/badge/omarchy-plugin-blue)](https://omarchy.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An intelligent dynamic wallpaper engine, Material You on-device theme generator, real-time outdoor weather synchronizer, ASUS Aura RGB keyboard backlight synchronizer, and GPU-aware performance guard for [Omarchy Linux](https://omarchy.org).
+An intelligent dynamic wallpaper engine, Material You on-device theme generator, real-time outdoor weather synchronizer, universal ambient keyboard backlight synchronizer, and GPU-aware performance guard for [Omarchy Linux](https://omarchy.org).
 
 ![Aura Material Cycler](preview.png)
 
@@ -22,7 +22,7 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
   - **Smart Fullscreen Auto-Pause**: Listens to Hyprland socket2 to instantly unmap/pause animation during fullscreen apps, gaming, or video playback (0% CPU/GPU).
 - **Live Weather-Adaptive Atmosphere**: Automatically queries real-time outdoor weather conditions (via Open-Meteo) and streams matching wallpapers and screen effects.
 - **Aether On-Device Material You Theme Engine**: Automatically analyzes active wallpapers using local Pillow + K-Means + Google Material You Monet HCT, generating a full palette and dynamically restyling the **entire Omarchy desktop** (top bar, window borders, menus, Chrome browser policies, Alacritty, Kitty, Ghostty, Foot, VS Code, Obsidian, and Helix). Palette results are cached by image path and modification time.
-- **ASUS Aura Keyboard Backlight Sync**: Synchronizes the wallpaper's primary accent hue directly to your ASUS laptop keyboard using `asusctl` static mode, while strictly respecting manual user brightness levels.
+- **Universal Ambient Keyboard Backlight Sync**: Synchronizes the wallpaper's primary accent hue directly with your laptop keyboard backlight. Supports all laptop keyboards with Linux backlight drivers: Apple MacBooks (Intel & Apple Silicon via Asahi Linux), Lenovo ThinkPads, Framework, Dell, HP, System76, and RGB-capable laptops (via OpenRGB or asusctl), while strictly respecting manual user brightness levels.
 - **GPU-aware Performance Guard**: Shows VRAM, utilization, temperature, and compute workloads in the same panel. Optional Auto-Protect pauses only an already-active Aura service during critical GPU pressure and resumes it only when Aura performed the pause.
 - **Interactive Settings Panel (`Panel.qml`)**:
   - Live outdoor weather card with real-time temperature, condition icon, and weather-adaptive toggle.
@@ -50,7 +50,7 @@ An intelligent dynamic wallpaper engine, Material You on-device theme generator,
 
 | Shortcut | Action | Description |
 | :--- | :--- | :--- |
-| `SUPER + B` | **Next Wallpaper & Recolor** | Immediately rotates wallpaper, recolors desktop theme, and syncs ASUS Aura LED |
+| `SUPER + B` | **Next Wallpaper & Recolor** | Immediately rotates wallpaper, recolors desktop theme, and syncs keyboard lighting |
 | `SUPER + ALT + P` | **Pause / Resume** | Toggles the background wallpaper rotation daemon |
 | `SUPER + ALT + I` | **Cycle Rotation Speed** | Cycles interval between 15s → 30s → 60s → 5m → 10m → 30m → 1h |
 
@@ -138,7 +138,7 @@ omarchy plugin remove harshith.aura-cycler
 
 ## External Dependencies
 
-- `asusctl` (optional, for ASUS ROG / TUF keyboard RGB backlight sync)
+- Keyboard lighting: Standard Linux `/sys/class/leds` (Apple, Lenovo ThinkPad, Dell, Framework, generic), `brightnessctl`, or optional RGB tools (`asusctl`, `openrgb`)
 - `python3`, `python3-venv`, `pillow`, `materialyoucolor`, `scikit-learn`, `numpy` (required for image validation and palette extraction)
 - standard HTTPS networking (only for weather and optional 4K wallpaper streaming)
 
@@ -155,7 +155,7 @@ python3 -m venv "$HOME/.local/share/omarchy/aura-cycler-venv"
 
 - Omarchy 4.0+ (Quattro)
 - Compatible with all displays (1080p, 1440p, 4K UHD, ultrawide)
-- ASUS ROG / TUF Gaming laptops with `asusctl` (gracefully degrades on non-ASUS systems)
+- Compatible with all laptop keyboard backlights: Apple MacBooks (Intel & Apple Silicon via Asahi Linux), Lenovo ThinkPads, Framework, Dell, HP, System76, ASUS ROG / TUF (`asusctl`), OpenRGB devices, and generic Linux PCs (gracefully degrades if no backlight hardware is present)
 
 ## License
 
