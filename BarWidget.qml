@@ -41,19 +41,37 @@ BarWidget {
   function injectPanel() {
     var target = panelLoader.item
     if (!target) return
-    if ("bar" in target) target.bar = root.bar
-    if ("settings" in target) target.settings = root.settings
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
     if ("service" in target) target.service = root.service
   }
 
-  function open() { if (panelLoader.item) panelLoader.item.open() }
-  function close() { if (panelLoader.item) panelLoader.item.close() }
-  function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+  Binding {
+    target: panelLoader.item
+    property: "settings"
+    value: root.settings
+    when: panelLoader.item !== null
+    restoreMode: Binding.RestoreNone
+  }
 
-  onBarChanged: injectPanel()
-  onSettingsChanged: injectPanel()
+  Binding {
+    target: panelLoader.item
+    property: "bar"
+    value: root.bar
+    when: panelLoader.item !== null
+    restoreMode: Binding.RestoreNone
+  }
+
+  readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+  readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+
+  function open() { if (panelLoader.item && panelLoader.item.open) panelLoader.item.open() }
+  function close() { if (panelLoader.item && panelLoader.item.close) panelLoader.item.close() }
+  function togglePanel() { if (panelLoader.item && panelLoader.item.toggle) panelLoader.item.toggle() }
+  function closeForPopoutSwitch() {
+    if (panelLoader.item && panelLoader.item.closeForPopoutSwitch) panelLoader.item.closeForPopoutSwitch()
+    else close()
+  }
 
   Component.onCompleted: refreshState()
 
@@ -89,7 +107,7 @@ BarWidget {
   }
 
   Timer {
-    interval: 3000
+    interval: root.opened ? 3000 : 10000
     running: true
     repeat: true
     onTriggered: root.refreshState()
@@ -201,8 +219,8 @@ BarWidget {
       if (idx === -1) idx = 1
       var nextIdx = delta > 0 ? Math.min(steps.length - 1, idx + 1) : Math.max(0, idx - 1)
       if (nextIdx !== idx) {
-        root.bar.run(root.cliPath + " interval " + steps[nextIdx])
-        root.refreshState()
+        speedProc.command = [root.cliPath, "interval", String(steps[nextIdx])]
+        speedProc.running = true
       }
     }
   }

@@ -10,7 +10,7 @@ Item {
 
   property var shell: null
   property var manifest: null
-  property bool effectsEnabled: true
+  property bool effectsEnabled: false
   property string weatherMode: "auto" // "auto", "rain", "thunder", "snow", "sun", "stars", "fog"
   property string activeEffect: "rain" // resolved active effect
   property string overlayLayer: "bottom" // "bottom" (behind windows, on wallpaper) or "top" (over windows)
@@ -86,7 +86,7 @@ Item {
 
   Timer {
     id: statusTimer
-    interval: 8000
+    interval: 600000
     repeat: true
     running: true
     onTriggered: root.refreshStatus()

@@ -10,7 +10,7 @@ Panel {
   id: root
   moduleName: "harshith.aura-cycler"
   ipcTarget: "harshith.aura-cycler.panel"
-  manageIpc: false
+  manageIpc: true
 
   readonly property string cliPath: Qt.resolvedUrl("bin/aura-cycler").toString().replace("file://", "")
 
@@ -60,6 +60,7 @@ Panel {
 
   readonly property color fg: bar ? bar.foreground : Color.popups.text
   readonly property color bg: Color.popups.background
+  readonly property color muted: Color.subtext ? Color.subtext : Qt.darker(root.fg, 1.4)
   readonly property color accent: currentAccent ? currentAccent : Color.accent
   readonly property color gpuGuardColor: gpuGuardLevel === "critical" ? "#ff5f56" : (gpuGuardLevel === "warning" ? "#f5c451" : accent)
   readonly property string fontFam: bar ? bar.fontFamily : Style.font.family
@@ -344,10 +345,12 @@ Panel {
             }
 
             Text {
-              visible: root.gpuProcesses.length > 0
+              visible: root.gpuProcesses && root.gpuProcesses.length > 0 && root.gpuProcesses[0]
               width: parent.width
               textFormat: Text.PlainText
-              text: "Top workload: " + root.gpuProcesses[0].name + "  •  " + root.gpuProcesses[0].used_mib + " MiB"
+              text: (root.gpuProcesses && root.gpuProcesses.length > 0 && root.gpuProcesses[0])
+                ? ("Top workload: " + (root.gpuProcesses[0].name || "") + "  •  " + (root.gpuProcesses[0].used_mib || 0) + " MiB")
+                : ""
               color: root.muted
               font.family: root.fontFam
               font.pixelSize: Style.font.caption

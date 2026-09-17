@@ -72,6 +72,9 @@ THEME_TEMPLATE_FILES = (
 )
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 MAX_WALLPAPER_PIXELS = 16_000_000
+MAX_WALLPAPER_BYTES = 25 * 1024 * 1024  # 25 MiB download size limit
+MAX_JSON_BYTES = 1024 * 1024            # 1 MiB JSON API response limit
+SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 last_keyboard_level = None
 last_keyboard_color = None
@@ -356,10 +359,20 @@ def parse_gpu_guard_processes(text):
         processes.append({"pid": pid, "name": fields[1].strip(), "used_mib": max(0, used)})
     return sorted(processes, key=lambda item: item["used_mib"], reverse=True)[:8]
 
-def collect_gpu_guard_metrics():
+_LAST_GPU_METRICS = None
+_LAST_GPU_METRICS_TIME = 0
+
+def collect_gpu_guard_metrics(max_age=5.0):
+    global _LAST_GPU_METRICS, _LAST_GPU_METRICS_TIME
+    now = time.time()
+    if _LAST_GPU_METRICS is not None and (now - _LAST_GPU_METRICS_TIME) < max_age:
+        return _LAST_GPU_METRICS
+
     binary = shutil.which("nvidia-smi")
     if not binary:
-        return {"available": False, "error": "nvidia-smi is not installed"}, []
+        _LAST_GPU_METRICS = ({"available": False, "error": "nvidia-smi is not installed"}, [])
+        _LAST_GPU_METRICS_TIME = now
+        return _LAST_GPU_METRICS
     query = [
         binary,
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit",
@@ -371,16 +384,22 @@ def collect_gpu_guard_metrics():
             env={**os.environ, "LC_ALL": "C"}
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
-        return {"available": False, "error": str(error)}, []
+        _LAST_GPU_METRICS = ({"available": False, "error": str(error)}, [])
+        _LAST_GPU_METRICS_TIME = now
+        return _LAST_GPU_METRICS
     if result.returncode != 0:
-        return {"available": False, "error": (result.stderr.strip() or "nvidia-smi could not read the GPU")[-240:]}, []
+        _LAST_GPU_METRICS = ({"available": False, "error": (result.stderr.strip() or "nvidia-smi could not read the GPU")[-240:]}, [])
+        _LAST_GPU_METRICS_TIME = now
+        return _LAST_GPU_METRICS
     gpu = None
     for line in result.stdout.splitlines():
         gpu = parse_gpu_guard_row(line)
         if gpu:
             break
     if not gpu:
-        return {"available": False, "error": "nvidia-smi returned no usable GPU metrics"}, []
+        _LAST_GPU_METRICS = ({"available": False, "error": "nvidia-smi returned no usable GPU metrics"}, [])
+        _LAST_GPU_METRICS_TIME = now
+        return _LAST_GPU_METRICS
     processes = []
     try:
         process_result = subprocess.run(
@@ -392,7 +411,9 @@ def collect_gpu_guard_metrics():
             processes = parse_gpu_guard_processes(process_result.stdout)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         pass
-    return {"available": True, **gpu}, processes
+    _LAST_GPU_METRICS = ({"available": True, **gpu}, processes)
+    _LAST_GPU_METRICS_TIME = now
+    return _LAST_GPU_METRICS
 
 def gpu_guard_level(metrics, state):
     if not metrics.get("available"):
@@ -527,6 +548,28 @@ def save_config(cfg):
     except Exception as e:
         log(f"Error saving config: {e}")
 
+def read_capped_json(resp, max_bytes=MAX_JSON_BYTES):
+    """
+    Reads and decodes JSON from an HTTP response, enforcing a strict size cap.
+    Rejects Content-Length > max_bytes upfront, and reads at most max_bytes + 1
+    to abort before parsing if the payload exceeds the limit.
+    """
+    headers = getattr(resp, "headers", None)
+    if headers is not None and hasattr(headers, "get"):
+        cl_header = headers.get("Content-Length")
+        if cl_header is not None:
+            try:
+                cl = int(str(cl_header).strip())
+                if cl > max_bytes:
+                    raise ValueError(f"Content-Length {cl} exceeds maximum allowed size of {max_bytes} bytes")
+            except (ValueError, TypeError) as e:
+                if "exceeds maximum allowed size" in str(e):
+                    raise
+    payload = resp.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError(f"Response payload exceeds maximum allowed size of {max_bytes} bytes")
+    return json.loads(payload.decode("utf-8"))
+
 def get_location():
     cfg = load_config()
     loc = cfg.get("location_cache")
@@ -537,7 +580,7 @@ def get_location():
     try:
         req = urllib.request.Request("http://ip-api.com/json", headers={"User-Agent": "AuraCycler/1.1"})
         with urllib.request.urlopen(req, timeout=2.5) as resp:
-            data = json.loads(resp.read().decode())
+            data = read_capped_json(resp)
             if data.get("status") == "success":
                 loc = {
                     "lat": data.get("lat", 12.9753),
@@ -570,7 +613,7 @@ def get_weather(force=False):
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
         req = urllib.request.Request(url, headers={"User-Agent": "AuraCycler/1.1"})
         with urllib.request.urlopen(req, timeout=3.0) as resp:
-            data = json.loads(resp.read().decode())
+            data = read_capped_json(resp)
             current = data.get("current", {})
             code = int(current.get("weather_code", 0))
             temp = float(current.get("temperature_2m", 22.0))
@@ -644,8 +687,52 @@ def valid_wallpaper(path, minimum=(2560, 1440)):
     except Exception:
         return False
 
+def safe_cache_path(prefix, identifier, extension=".jpg"):
+    """
+    Derive a sanitized cache file path strictly contained within CACHE_DIR.
+    Uses a strict identifier allowlist; if invalid or path components are present,
+    falls back to a safe SHA256 hex digest of the raw identifier.
+    Guarantees the resolved destination remains under CACHE_DIR.
+    """
+    norm_ext = extension.lower() if extension else ".jpg"
+    if norm_ext not in IMAGE_EXTENSIONS:
+        norm_ext = ".jpg"
+
+    clean_prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(prefix))
+    raw_id = str(identifier) if identifier is not None else ""
+    if SAFE_ID_RE.fullmatch(raw_id):
+        safe_id = raw_id
+    else:
+        safe_id = hashlib.sha256(raw_id.encode("utf-8", errors="replace")).hexdigest()[:32]
+
+    filename = f"{clean_prefix}_{safe_id}{norm_ext}" if clean_prefix else f"{safe_id}{norm_ext}"
+
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_real = os.path.realpath(os.path.abspath(CACHE_DIR))
+    dest_path = os.path.abspath(os.path.join(CACHE_DIR, filename))
+    dest_real = os.path.realpath(dest_path)
+
+    try:
+        if os.path.commonpath([cache_real, dest_real]) != cache_real:
+            raise ValueError(f"Path traversal detected: {dest_path} escapes {CACHE_DIR}")
+    except ValueError:
+        raise ValueError(f"Path traversal detected: {dest_path} escapes {CACHE_DIR}")
+
+    return dest_path
+
 def download_wallpaper(url, destination, minimum=(2560, 1440)):
-    """Download to a same-directory temporary file, validate, then publish atomically."""
+    """Download to a same-directory temporary file, stream with byte limits, validate, then publish atomically."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_real = os.path.realpath(os.path.abspath(CACHE_DIR))
+    dest_real = os.path.realpath(os.path.abspath(destination))
+    try:
+        if os.path.commonpath([cache_real, dest_real]) != cache_real:
+            log(f"Blocked download to destination outside cache directory: {destination}")
+            return False
+    except ValueError:
+        log(f"Blocked download to invalid destination: {destination}")
+        return False
+
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     temporary = None
     try:
@@ -657,7 +744,30 @@ def download_wallpaper(url, destination, minimum=(2560, 1440)):
             temporary = f.name
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
             with urllib.request.urlopen(req, timeout=15) as resp:
-                shutil.copyfileobj(resp, f)
+                headers = getattr(resp, "headers", None)
+                if headers is not None and hasattr(headers, "get"):
+                    cl_header = headers.get("Content-Length")
+                    if cl_header is not None:
+                        try:
+                            cl = int(str(cl_header).strip())
+                            if cl > MAX_WALLPAPER_BYTES or cl < 0:
+                                log(f"Rejected download {url}: Content-Length {cl} exceeds {MAX_WALLPAPER_BYTES} bytes")
+                                return False
+                        except (ValueError, TypeError):
+                            pass
+
+                total_bytes = 0
+                chunk_size = 64 * 1024
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_WALLPAPER_BYTES:
+                        log(f"Aborted download {url}: exceeded maximum size of {MAX_WALLPAPER_BYTES} bytes ({total_bytes} bytes read)")
+                        return False
+                    f.write(chunk)
+
             f.flush()
             os.fsync(f.fileno())
 
@@ -773,7 +883,20 @@ def toggle_blur():
     cur = get_blur()
     set_blur(0 if cur > 0 else 12)
 
-def collect_local_wallpapers():
+_WALLPAPERS_CACHE = None
+_WALLPAPERS_CACHE_TIME = 0
+
+def invalidate_wallpapers_cache():
+    global _WALLPAPERS_CACHE, _WALLPAPERS_CACHE_TIME
+    _WALLPAPERS_CACHE = None
+    _WALLPAPERS_CACHE_TIME = 0
+
+def collect_local_wallpapers(validate=False, max_age=30.0):
+    global _WALLPAPERS_CACHE, _WALLPAPERS_CACHE_TIME
+    now = time.time()
+    if not validate and _WALLPAPERS_CACHE is not None and (now - _WALLPAPERS_CACHE_TIME) < max_age:
+        return list(_WALLPAPERS_CACHE)
+
     cfg = load_config()
     folders = cfg.get("custom_folders", [])
     paths = []
@@ -787,18 +910,20 @@ def collect_local_wallpapers():
             for f in sorted(files):
                 if f.lower().endswith(IMAGE_EXTENSIONS):
                     candidate = os.path.join(root, f)
-                    if candidate not in seen and valid_wallpaper(candidate):
-                        paths.append(candidate)
-                        seen.add(candidate)
+                    if candidate not in seen:
+                        if not validate or valid_wallpaper(candidate):
+                            paths.append(candidate)
+                            seen.add(candidate)
 
     # Fallback to CACHE_DIR if no user images exist
     if not paths and os.path.exists(CACHE_DIR):
         for f in sorted(os.listdir(CACHE_DIR)):
             if f.lower().endswith(IMAGE_EXTENSIONS):
                 candidate = os.path.join(CACHE_DIR, f)
-                if candidate not in seen and valid_wallpaper(candidate):
-                    paths.append(candidate)
-                    seen.add(candidate)
+                if candidate not in seen:
+                    if not validate or valid_wallpaper(candidate):
+                        paths.append(candidate)
+                        seen.add(candidate)
 
     # Fallback to system themes directory
     if not paths:
@@ -808,9 +933,14 @@ def collect_local_wallpapers():
                 for f in sorted(files):
                     if f.lower().endswith(IMAGE_EXTENSIONS):
                         candidate = os.path.join(root, f)
-                        if candidate not in seen and valid_wallpaper(candidate):
-                            paths.append(candidate)
-                            seen.add(candidate)
+                        if candidate not in seen:
+                            if not validate or valid_wallpaper(candidate):
+                                paths.append(candidate)
+                                seen.add(candidate)
+
+    if not validate:
+        _WALLPAPERS_CACHE = list(paths)
+        _WALLPAPERS_CACHE_TIME = now
 
     return paths
 
@@ -842,14 +972,14 @@ def fetch_single_random_4k():
             headers["X-API-Key"] = key
         req = urllib.request.Request(wh_url, headers=headers)
         with urllib.request.urlopen(req, timeout=7) as resp:
-            data = json.loads(resp.read().decode())
+            data = read_capped_json(resp)
             items = data.get("data", [])
             if items:
                 item = random.choice(items[:6])
                 photo_id = item.get("id")
                 img_url = item.get("path")
-                ext = ".png" if img_url.lower().endswith(".png") else ".jpg"
-                dest = os.path.join(CACHE_DIR, f"wallhaven_{photo_id}{ext}")
+                ext = ".png" if str(img_url or "").lower().endswith(".png") else ".jpg"
+                dest = safe_cache_path("wallhaven", photo_id, ext)
                 if not valid_wallpaper(dest):
                     download_wallpaper(img_url, dest)
                 if valid_wallpaper(dest):
@@ -866,12 +996,12 @@ def fetch_single_random_4k():
         bing_url = f"https://www.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n=1&mkt=en-US&uhd=1&uhdwidth=3840&uhdheight=2160"
         req = urllib.request.Request(bing_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read().decode())
+            data = read_capped_json(resp)
             images = data.get("images", [])
             if images:
                 img = images[0]
                 hsh = img.get("hsh", str(idx))
-                dest = os.path.join(CACHE_DIR, f"bing_{hsh}.jpg")
+                dest = safe_cache_path("bing", hsh, ".jpg")
                 if os.path.exists(dest) and valid_wallpaper(dest):
                     return dest
                 img_url = "https://www.bing.com" + img["urlbase"] + "_UHD.jpg"
@@ -913,15 +1043,15 @@ def fetch_4k_wallpapers(count=4):
                 headers["X-API-Key"] = key
             req = urllib.request.Request(wh_url, headers=headers)
             with urllib.request.urlopen(req, timeout=7) as resp:
-                data = json.loads(resp.read().decode())
+                data = read_capped_json(resp)
                 items = data.get("data", [])
                 for item in items:
                     if downloaded >= count:
                         break
                     photo_id = item.get("id")
                     img_url = item.get("path")
-                    ext = ".png" if img_url.lower().endswith(".png") else ".jpg"
-                    dest = os.path.join(CACHE_DIR, f"wallhaven_{photo_id}{ext}")
+                    ext = ".png" if str(img_url or "").lower().endswith(".png") else ".jpg"
+                    dest = safe_cache_path("wallhaven", photo_id, ext)
                     if not os.path.exists(dest):
                         if download_wallpaper(img_url, dest):
                             log(f"Downloaded 4K wallpaper: {os.path.basename(dest)} ({topic})")
@@ -935,12 +1065,12 @@ def fetch_4k_wallpapers(count=4):
                 bing_url = f"https://www.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n=1&mkt=en-US&uhd=1&uhdwidth=3840&uhdheight=2160"
                 req = urllib.request.Request(bing_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=6) as resp:
-                    data = json.loads(resp.read().decode())
+                    data = read_capped_json(resp)
                     images = data.get("images", [])
                     if images:
                         img = images[0]
                         hsh = img.get("hsh", str(idx))
-                        dest = os.path.join(CACHE_DIR, f"bing_{hsh}.jpg")
+                        dest = safe_cache_path("bing", hsh, ".jpg")
                         if not os.path.exists(dest):
                             img_url = "https://www.bing.com" + img["urlbase"] + "_UHD.jpg"
                             if download_wallpaper(img_url, dest) and valid_wallpaper(dest):
@@ -1211,19 +1341,24 @@ def apply_next_wallpaper():
 
     # 2. Select from local wallpaper pool
     if not chosen:
-        wallpapers = collect_local_wallpapers()
+        wallpapers = collect_local_wallpapers(validate=False)
         if not wallpapers:
             if cfg.get("stream_online", False):
                 log("No wallpapers found locally, fetching 4K batch...")
                 fetch_4k_wallpapers(4)
-                wallpapers = collect_local_wallpapers()
+                wallpapers = collect_local_wallpapers(validate=False)
             else:
                 log("No wallpapers found locally and online streaming is disabled.")
         if wallpapers:
             current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
             current_bg = os.path.realpath(current_bg_link) if os.path.exists(current_bg_link) else ""
             candidates = [w for w in wallpapers if w != current_bg]
-            chosen = random.choice(candidates if candidates else wallpapers)
+            pool = list(candidates if candidates else wallpapers)
+            random.shuffle(pool)
+            for candidate in pool[:20]:
+                if valid_wallpaper(candidate):
+                    chosen = candidate
+                    break
 
     if not chosen:
         log("No valid wallpaper available to apply.")
@@ -1269,7 +1404,15 @@ def apply_next_wallpaper():
             shell_b64 = base64.b64encode(shell_raw.encode()).decode()
             subprocess.run(["omarchy-shell", "-q", "background", "themeTransition", "", chosen, chosen, b64, shell_b64],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            subprocess.run(["omarchy-shell", "-q", "background", "set", chosen],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
             subprocess.run(["omarchy-shell", "-q", "shell", "applyTheme", b64, shell_b64],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        except Exception:
+            pass
+    else:
+        try:
+            subprocess.run(["omarchy-shell", "-q", "background", "set", chosen],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
         except Exception:
             pass
@@ -1319,8 +1462,9 @@ def run_loop():
         while True:
             try:
                 apply_next_wallpaper()
+                cfg = load_config()
                 now = time.time()
-                if now - last_fetch > 1800:
+                if cfg.get("stream_online", False) and now - last_fetch > 1800:
                     last_fetch = now
                     try:
                         fetch_4k_wallpapers(2)
@@ -1462,6 +1606,7 @@ def folder_cmd(args):
             folders.append(new_path)
             cfg["custom_folders"] = folders
             save_config(cfg)
+            invalidate_wallpapers_cache()
             print(f"Added folder: {new_path}")
         else:
             print(f"Folder is already configured: {new_path}")
@@ -1480,6 +1625,7 @@ def folder_cmd(args):
         if matched:
             cfg["custom_folders"] = new_folders
             save_config(cfg)
+            invalidate_wallpapers_cache()
             print(f"Removed folder: {target}")
         else:
             print(f"Folder not found: {target}")
@@ -1507,7 +1653,7 @@ def status_json():
     QUIET_OUTPUT = True
     active = daemon_is_active() or systemd_is_active()
     cfg = load_config()
-    wallpapers = collect_local_wallpapers()
+    wallpapers = collect_local_wallpapers(validate=False)
     
     current_wp = ""
     current_wp_link = os.path.expanduser("~/.local/state/omarchy/current/background")
@@ -1613,7 +1759,7 @@ def effects_cmd(args):
         print("Usage: aura-cycler effects {on|off|toggle|mode <auto|rain|thunder|snow|sun|stars|fog>|layer <bottom|top>|intensity <num>}")
 
 def status_daemon():
-    wallpapers = collect_local_wallpapers()
+    wallpapers = collect_local_wallpapers(validate=False)
     cfg = load_config()
     weather = get_weather()
     status_str = "active (running)" if (daemon_is_active() or systemd_is_active()) else "inactive (stopped)"
