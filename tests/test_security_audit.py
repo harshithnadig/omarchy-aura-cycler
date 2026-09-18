@@ -126,6 +126,12 @@ class SecurityAuditTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertFalse(os.path.exists(outside_dest))
 
+    def test_download_wallpaper_rejects_non_http_urls(self):
+        destination = str(self.cache_dir / "local.jpg")
+        success = self.module.download_wallpaper("file:///etc/passwd", destination)
+        self.assertFalse(success)
+        self.assertFalse(os.path.exists(destination))
+
     def test_download_wallpaper_rejects_oversized_content_length(self):
         dest = str(self.cache_dir / "oversized.jpg")
         mock_resp = MockHttpResponse(

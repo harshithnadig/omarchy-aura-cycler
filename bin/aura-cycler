@@ -247,6 +247,17 @@ def daemon_is_active():
         return False
     return False
 
+def daemon_process_matches(pid):
+    """Only allow stop to signal a process launched from this plugin."""
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
+            argv = [part.decode("utf-8", errors="replace") for part in f.read().split(b"\0") if part]
+        expected_script = os.path.realpath(__file__)
+        absolute_args = [os.path.realpath(arg) for arg in argv if arg.startswith("/")]
+        return expected_script in absolute_args and "run" in argv[1:]
+    except (OSError, ValueError, TypeError):
+        return False
+
 def systemd_unit_available():
     try:
         return subprocess.run(
@@ -722,6 +733,10 @@ def safe_cache_path(prefix, identifier, extension=".jpg"):
 
 def download_wallpaper(url, destination, minimum=(2560, 1440)):
     """Download to a same-directory temporary file, stream with byte limits, validate, then publish atomically."""
+    parsed_url = urllib.parse.urlparse(str(url or ""))
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        log(f"Blocked non-HTTP wallpaper URL: {url}")
+        return False
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache_real = os.path.realpath(os.path.abspath(CACHE_DIR))
     dest_real = os.path.realpath(os.path.abspath(destination))
@@ -1667,8 +1682,14 @@ def stop_daemon():
             pass
 
     try:
+        if os.path.islink(PID_FILE):
+            print("Refusing to read a symlinked Aura Material Cycler PID file.")
+            return
         with open(PID_FILE, "r", encoding="utf-8") as f:
             pid = int(f.read().strip())
+        if not daemon_process_matches(pid):
+            print("Refusing to signal an unrelated process; Aura PID is stale.")
+            return
         os.kill(pid, signal.SIGTERM)
         print("Aura Material Cycler stopped.")
     except (FileNotFoundError, ValueError, ProcessLookupError):
