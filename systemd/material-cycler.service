@@ -5,8 +5,8 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.config/omarchy/plugins/harshith.aura-cycler/bin/aura-cycler run
-Restart=always
+ExecStart=%h/.local/libexec/omarchy/harshith.aura-cycler-service-guard
+Restart=on-failure
 RestartSec=10
 Nice=10
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

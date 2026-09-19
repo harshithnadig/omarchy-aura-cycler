@@ -108,12 +108,19 @@ omarchy plugin enable harshith.aura-cycler
 ```
 
 Enabling the plugin starts a user-session daemon from the plugin directory. For
-systemd supervision across shell restarts, link the included unit explicitly:
+systemd supervision across shell restarts, install the guard and copy the unit
+outside the plugin checkout. The guard verifies the expected plugin id, current
+user ownership, real (non-symlink) path components, and executable entrypoint
+before launching Aura. If the checkout disappears or is replaced by a foreign
+plugin, it removes only the unit it installed and exits without executing it:
 
 ```bash
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
+GUARD_PATH="$HOME/.local/libexec/omarchy/harshith.aura-cycler-service-guard"
+UNIT_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
+install -Dm755 "$PLUGIN_DIR/bin/aura-cycler-service-guard" "$GUARD_PATH"
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-ln -sf "$PLUGIN_DIR/systemd/material-cycler.service" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
+install -Dm644 "$PLUGIN_DIR/systemd/material-cycler.service" "$UNIT_PATH"
 systemctl --user daemon-reload
 systemctl --user enable --now material-cycler.service
 ```
@@ -128,9 +135,11 @@ To uninstall the plugin:
 
 ```bash
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
+GUARD_PATH="$HOME/.local/libexec/omarchy/harshith.aura-cycler-service-guard"
+UNIT_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
 "$PLUGIN_DIR/bin/aura-cycler" stop
 systemctl --user disable --now material-cycler.service 2>/dev/null || true
-rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
+rm -f "$UNIT_PATH" "$GUARD_PATH"
 systemctl --user daemon-reload
 omarchy plugin disable harshith.aura-cycler
 omarchy plugin remove harshith.aura-cycler
@@ -147,8 +156,9 @@ Python packages are not already available, create a user-owned environment and
 install them before enabling rotation:
 
 ```bash
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
 python3 -m venv "$HOME/.local/share/omarchy/aura-cycler-venv"
-"$HOME/.local/share/omarchy/aura-cycler-venv/bin/pip" install Pillow numpy scikit-learn materialyoucolor
+"$HOME/.local/share/omarchy/aura-cycler-venv/bin/pip" install --require-hashes -r "$PLUGIN_DIR/requirements.lock"
 ```
 
 ## Compatibility
