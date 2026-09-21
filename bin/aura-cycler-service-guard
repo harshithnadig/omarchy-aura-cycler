@@ -86,19 +86,59 @@ def owned_unit_is_present():
         unit_text = UNIT_PATH.read_text(encoding="utf-8")
     except OSError:
         return False
-    return f"ExecStart={UNIT_EXEC_MARKER}" in unit_text
+    return any(
+        line.strip() == f"ExecStart={UNIT_EXEC_MARKER}"
+        for line in unit_text.splitlines()
+    )
+
+
+def _remove_owned_enable_links():
+    """Remove only enablement links that point at Aura's exact unit path."""
+    unit_path = os.path.abspath(os.fspath(UNIT_PATH))
+    for wants_directory in (
+        "graphical-session.target.wants",
+        "default.target.wants",
+    ):
+        link = UNIT_PATH.parent / wants_directory / SERVICE_NAME
+        try:
+            if not stat.S_ISLNK(os.lstat(link).st_mode):
+                continue
+            target = os.readlink(link)
+            resolved_target = os.path.abspath(
+                os.path.join(os.fspath(link.parent), target)
+            )
+            if resolved_target == unit_path:
+                link.unlink()
+        except OSError:
+            continue
 
 
 def remove_owned_unit():
     """Disable future starts and remove only Aura's own unit file."""
     if not owned_unit_is_present():
         return
+
+    # Disable while the unit file still exists so systemd can remove its
+    # enablement links. The explicit link cleanup below is a safe fallback
+    # when systemd is unavailable or the unit is already partially removed.
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "disable", SERVICE_NAME],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+
     try:
         UNIT_PATH.unlink()
     except OSError:
         return
+
+    _remove_owned_enable_links()
     for command in (
-        ["systemctl", "--user", "disable", SERVICE_NAME],
         ["systemctl", "--user", "daemon-reload"],
     ):
         try:
