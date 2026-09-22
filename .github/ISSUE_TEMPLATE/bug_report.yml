@@ -22,10 +22,21 @@ body:
       label: Aura doctor output
       description: Paste `bin/aura-cycler doctor` output. Review/redact any local paths you consider private before posting.
       render: text
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Aura hardware capability output
+      description: Paste `bin/aura-cycler hardware`. This reports detected GPU/keyboard backends without hostnames or private location data.
+      render: json
   - type: input
     id: omarchy
     attributes:
       label: Omarchy version
+  - type: input
+    id: machine
+    attributes:
+      label: Laptop / desktop model (optional)
+      description: Helpful for vendor-specific hardware bugs; leave blank if you prefer.
   - type: input
     id: gpu
     attributes:
