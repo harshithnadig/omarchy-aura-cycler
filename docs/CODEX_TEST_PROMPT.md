@@ -10,6 +10,7 @@ pytest -q
 scripts/smoke-test.sh
 omarchy plugin validate .
 bin/aura-cycler doctor
+bin/aura-cycler hardware
 ```
 
 Then test the actual Omarchy session in this order:
@@ -21,12 +22,13 @@ Then test the actual Omarchy session in this order:
 5. **Location/weather** — test `location auto`, manual coordinates, stale weather fallback and unavailable weather separately. No fake temperatures or `(0,0)` coordinates.
 6. **Material You/theme scopes** — verify recoloring and all `theme-scope` modes (`shell`, `terminals`, `editors`, `all`) with representative applications already open.
 7. **History/favorites/scenes** — test previous/undo, numbered restore, favorites and every manual scene (`focus`, `gaming`, `battery`, `ambient`). Confirm scenes never silently enable weather or online wallpaper downloads.
-8. **Backup/recovery** — create a normal backup and verify location data is redacted; create a private backup; change several settings; restore and confirm state returns correctly and a pre-restore snapshot is created. Test `reset --keep-favorites --keep-folders`. In a disposable copy of the state file, test malformed JSON recovery and confirm the corrupt file is preserved rather than deleted.
-9. **GPU** — verify NVIDIA telemetry and Auto-Protect under a safe reproducible GPU load; confirm the public daemon remains alive while expensive cycling pauses.
-10. **Keyboard** — verify keyboard sync/off behavior without forcing a manually-off backlight on, and verify `keyboard sync-off` persists.
-11. **Fullscreen effects** — verify atmospheric effects pause/resume for fullscreen Hyprland clients.
-12. **systemd/uninstall** — verify optional systemd supervision uses the public `bin/aura-cycler` entrypoint and uninstall cleanup is safe.
+8. **Backup/recovery** — create a normal backup and verify location data is redacted; create a private backup; change several settings; restore and confirm state returns correctly and a pre-restore snapshot is created. Test `reset --yes --keep-favorites --keep-folders`. In a disposable copy of the state file, test malformed JSON recovery and confirm the corrupt file is preserved rather than deleted.
+9. **Hardware portability / GPU** — inspect `bin/aura-cycler hardware`. On this machine, verify every physically present GPU that exposes telemetry is represented. For NVIDIA, verify `nvidia-smi` telemetry and Auto-Protect under a safe reproducible GPU load; confirm the public daemon remains alive while expensive cycling pauses. Do not add model-specific code: if a hardware failure is real, fix capability detection in `aura-hardware.py` and add a synthetic regression test.
+10. **Keyboard portability** — verify keyboard sync/off behavior without forcing a manually-off laptop backlight on. Verify `keyboard sync-off` persists. If OpenRGB is installed for an external/desktop RGB keyboard, verify Aura can sync it even when no laptop-style keyboard brightness sysfs node exists.
+11. **Multiple displays** — if more than one monitor is connected, confirm atmosphere surfaces are present per screen, scale correctly, remain click-through and do not disturb monitor layout.
+12. **Fullscreen effects** — verify atmospheric effects pause/resume for fullscreen Hyprland clients.
+13. **systemd/uninstall** — verify optional systemd supervision uses the public `bin/aura-cycler` entrypoint and uninstall cleanup is safe.
 
-For every failure: reproduce it, identify the smallest cause, add/update a regression test where practical, and push the smallest compatible fix to this branch. Do **not** merge to `master`, remove features, add new features, or perform a broad refactor unless a reproducible failure requires it.
+For every failure: reproduce it, identify the smallest cause, add/update a regression test where practical, and push the smallest compatible fix to this branch. Do **not** merge to `master`, remove features, add unrelated features, or perform a broad refactor unless a reproducible failure requires it.
 
-Do not spend quota exploring architecture alternatives. `docs/ARCHITECTURE.md` is the intended v1.4 baseline. The goal is to validate that baseline on the real machine and fix only evidence-backed failures.
+Do not spend quota exploring architecture alternatives. `docs/ARCHITECTURE.md`, `docs/HARDWARE.md` and `docs/EXTENDING.md` are the intended v1.4 baseline. The goal is to validate that baseline on the real machine and fix only evidence-backed failures.
