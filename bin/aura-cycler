@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -81,6 +82,100 @@ config_layer.install(control)
 hardware_layer.install(control)
 
 
+def _shell_config_paths(active_control):
+    """Return Omarchy's preferred shell config followed by its legacy fallback."""
+    preferred = Path(active_control.runtime.XDG_CONFIG_HOME) / "omarchy" / "shell.json"
+    standard = Path(active_control.runtime.HOME) / ".config" / "omarchy" / "shell.json"
+    return (preferred,) if preferred == standard else (preferred, standard)
+
+
+def _entry_plugin_id(entry):
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        value = entry.get("id")
+        return str(value) if value is not None else ""
+    return ""
+
+
+def _plugin_enabled_from_shell(active_control):
+    """Return True/False from a readable shell.json, or None when unavailable.
+
+    Omarchy enables a third-party plugin exactly while its id is referenced by
+    the active bar, a bar-layout entry, or plugins[]. A missing/unreadable
+    config is treated as unknown rather than disabled so shell startup or a
+    transient atomic rewrite cannot kill a healthy Aura daemon.
+    """
+    plugin_id = str(config_layer.PLUGIN_ID)
+    for path in _shell_config_paths(active_control):
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        bar = data.get("bar")
+        if isinstance(bar, dict):
+            if str(bar.get("id") or "") == plugin_id:
+                return True
+            layout = bar.get("layout")
+            if isinstance(layout, dict):
+                for section in ("left", "center", "right"):
+                    entries = layout.get(section, [])
+                    if not isinstance(entries, list):
+                        continue
+                    if any(_entry_plugin_id(entry) == plugin_id for entry in entries):
+                        return True
+
+        plugins = data.get("plugins", [])
+        if isinstance(plugins, list):
+            if any(_entry_plugin_id(entry) == plugin_id for entry in plugins):
+                return True
+
+        # The first successfully parsed canonical config is authoritative.
+        return False
+    return None
+
+
+def _install_omarchy_lifecycle_guard(active_control):
+    """Make the daemon exit cleanly after Omarchy disables/removes Aura.
+
+    The preserved runtime already sleeps in short keyboard-sync slices. Wrap
+    that sleep instead of adding another process or polling subprocess. A clean
+    SystemExit(0) also cooperates with the optional systemd unit's
+    Restart=on-failure policy: disable stays stopped, while genuine crashes may
+    still be restarted.
+    """
+    core = active_control.core
+    original_sleep = core.sleep_with_keyboard_sync
+
+    def lifecycle_allows_run():
+        if not PUBLIC_PATH.is_file():
+            core.log("Aura plugin checkout disappeared; daemon exiting cleanly.")
+            return False
+        enabled = _plugin_enabled_from_shell(active_control)
+        if enabled is False:
+            core.log("Aura plugin disabled in Omarchy; daemon exiting cleanly.")
+            return False
+        return True
+
+    def guarded_sleep(seconds):
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while True:
+            if not lifecycle_allows_run():
+                raise SystemExit(0)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            original_sleep(min(5.0, remaining))
+
+    core.sleep_with_keyboard_sync = guarded_sleep
+    return lifecycle_allows_run
+
+
 def _install_bounded_logging(active_control):
     """Keep Aura's private log bounded without changing the preserved engine."""
     core = active_control.core
@@ -148,6 +243,14 @@ def main():
             "Use: aura-cycler reset --yes [--keep-favorites] [--keep-folders]"
         )
         return 2
+
+    if argv and argv[0] == "run":
+        enabled = _plugin_enabled_from_shell(control)
+        if enabled is False:
+            control.core.log("Aura plugin is disabled in Omarchy; refusing daemon start.")
+            return 0
+        _install_omarchy_lifecycle_guard(control)
+
     handled = hardware_layer.dispatch(control, argv)
     if handled is not None:
         return handled
