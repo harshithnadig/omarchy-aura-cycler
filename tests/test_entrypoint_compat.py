@@ -127,4 +127,6 @@ def test_bounded_log_rotates_oversized_log(tmp_path, monkeypatch):
 
     assert Path(str(log_path) + ".1").is_file()
     assert log_path.read_text(encoding="utf-8") == "after rotation\n"
+    assert log_path.stat().st_mode & 0o777 == 0o600
+    assert Path(str(log_path) + ".1").stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "material-cycler.log.lock").stat().st_mode & 0o777 == 0o600
