@@ -20,6 +20,70 @@
     "description": "Adaptive Material You wallpaper, weather atmosphere, ambient keyboard sync, and GPU-aware performance protection",
     "category": "Appearance",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "interval": 300,
+      "blur": 12,
+      "weatherSync": false,
+      "streamOnline": false,
+      "screenEffects": false,
+      "keyboardSync": true,
+      "themeScope": "all"
+    },
+    "schema": [
+      {
+        "key": "interval",
+        "type": "integer",
+        "label": "Wallpaper interval (seconds)",
+        "min": 5,
+        "max": 86400,
+        "step": 5,
+        "defaultValue": 300,
+        "description": "How often Aura rotates wallpapers."
+      },
+      {
+        "key": "blur",
+        "type": "integer",
+        "label": "Glass blur",
+        "min": 0,
+        "max": 24,
+        "step": 1,
+        "defaultValue": 12
+      },
+      {
+        "key": "weatherSync",
+        "type": "boolean",
+        "label": "Weather sync",
+        "defaultValue": false,
+        "description": "Opt in to live weather. Location mode is still controlled by Aura."
+      },
+      {
+        "key": "streamOnline",
+        "type": "boolean",
+        "label": "Online wallpapers",
+        "defaultValue": false,
+        "description": "Allow Aura to fetch wallpapers from configured HTTPS sources."
+      },
+      {
+        "key": "screenEffects",
+        "type": "boolean",
+        "label": "Atmospheric effects",
+        "defaultValue": false
+      },
+      {
+        "key": "keyboardSync",
+        "type": "boolean",
+        "label": "Keyboard color sync",
+        "defaultValue": true
+      },
+      {
+        "key": "themeScope",
+        "type": "enum",
+        "label": "Live theme scope",
+        "options": ["shell", "terminals", "editors", "all"],
+        "defaultValue": "all",
+        "description": "Controls which already-running applications Aura refreshes after a palette change."
+      }
+    ]
   }
 }
