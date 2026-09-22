@@ -6,6 +6,7 @@ recovery and maintenance policy cannot be bypassed accidentally.
 """
 
 import importlib.util
+import json
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -29,6 +30,43 @@ def _load(name, path):
 control = _load("aura_cycler_control", CONTROL_PATH)
 config_layer = _load("aura_cycler_config", CONFIG_LAYER_PATH)
 
+# Omarchy historically stores shell.json under ~/.config/omarchy even on some
+# setups that otherwise use XDG_CONFIG_HOME. Prefer the config-layer XDG lookup,
+# then fall back to the standard Omarchy path so native settings remain usable
+# on both layouts without changing Aura's own XDG-aware state paths.
+_original_shell_explicit_settings = config_layer._shell_explicit_settings
+
+
+def _standard_shell_fallback(active_control):
+    explicit = _original_shell_explicit_settings(active_control)
+    if explicit:
+        return explicit
+
+    standard = Path(active_control.runtime.HOME) / ".config" / "omarchy" / "shell.json"
+    xdg = Path(active_control.runtime.XDG_CONFIG_HOME) / "omarchy" / "shell.json"
+    if standard == xdg or not standard.is_file():
+        return {}
+    try:
+        data = json.loads(standard.read_text(encoding="utf-8"))
+        layout = data.get("bar", {}).get("layout", {})
+        for section in ("left", "center", "right"):
+            entries = layout.get(section, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id") == config_layer.PLUGIN_ID:
+                    return {
+                        key: entry[key]
+                        for key in config_layer.NATIVE_SETTING_KEYS
+                        if key in entry
+                    }
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+    return {}
+
+
+config_layer._shell_explicit_settings = _standard_shell_fallback
+
 # Detached-daemon identity must remain the public entrypoint even though the
 # feature/control implementations are import-only layers.
 control.FRONT_PATH = PUBLIC_PATH
@@ -36,7 +74,7 @@ control.runtime.WRAPPER_PATH = PUBLIC_PATH
 config_layer.install(control)
 
 # Preserve the import surface used by Aura's regression tests and existing
-# helper scripts. The public file remains tiny; implementation lives in the
+# helper scripts. The public file remains small; implementation lives in the
 # control/runtime layers.
 for _name in dir(control):
     if not _name.startswith("__"):
