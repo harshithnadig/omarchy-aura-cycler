@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a focused Aura improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What is difficult or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Would this require new network access?
+      options:
+        - "No"
+        - "Yes, opt-in"
+        - "Unsure"
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Trade-offs / resource impact

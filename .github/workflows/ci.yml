@@ -32,6 +32,7 @@ jobs:
         run: |
           python -m py_compile \
             bin/aura-cycler \
+            bin/aura-cycler-runtime \
             bin/aura-cycler-core \
             bin/aura-cycler-service-guard
 
@@ -57,6 +58,9 @@ jobs:
 
       - name: Run regression tests
         run: pytest -q
+
+      - name: Run repository smoke checks
+        run: scripts/smoke-test.sh
 
       - name: Optional QML lint
         shell: bash

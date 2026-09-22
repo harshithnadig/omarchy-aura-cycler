@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible Aura problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include the exact command/action and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Aura doctor output
+      description: Paste `bin/aura-cycler doctor` output. Remove anything you consider private.
+      render: text
+  - type: input
+    id: omarchy
+    attributes:
+      label: Omarchy version
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / driver
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: text
