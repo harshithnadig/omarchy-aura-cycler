@@ -7,12 +7,14 @@ Before tagging a new Aura release:
 - [ ] `pytest -q` is green.
 - [ ] `scripts/smoke-test.sh` is green.
 - [ ] Manifest defaults/schema match the runtime config keys and privacy defaults.
-- [ ] Only `bin/aura-cycler` is executable; config/control/runtime/core layers remain import-only.
+- [ ] Only `bin/aura-cycler` is executable; config/hardware/control/runtime/core layers remain import-only.
 - [ ] Config migration, corruption recovery, stale-save merge, backup/restore and native-settings tests are green.
+- [ ] Synthetic hardware tests cover multi-GPU aggregation, AMD/Intel DRM discovery, desktop OpenRGB without laptop brightness sysfs, manually-off backlight preservation and no-hardware fallback.
 
 ## Real Omarchy gates
 - [ ] `omarchy plugin validate .` passes on the target Omarchy release.
 - [ ] `bin/aura-cycler doctor` has no unexplained failures.
+- [ ] `bin/aura-cycler hardware` matches the actual machine and does not omit a readable GPU/backend.
 - [ ] Existing v1.3 config is migrated without losing interval/blur/weather/custom-folder preferences.
 - [ ] Native Omarchy settings change Aura runtime state and Aura CLI changes mirror back to shell settings.
 - [ ] QML bar widget and panel tested on a real Quattro session.
@@ -23,8 +25,10 @@ Before tagging a new Aura release:
 - [ ] All theme scopes tested without disrupting active applications unexpectedly.
 - [ ] Focus/gaming/battery/ambient scenes tested and confirmed not to enable networking implicitly.
 - [ ] Material You transition verified with at least three wallpapers.
-- [ ] NVIDIA telemetry and Auto-Protect verified on the real test machine.
+- [ ] GPU telemetry and Auto-Protect verified on the available real test hardware; vendor-specific claims are made only for backends actually tested or supported by reproducible community reports.
 - [ ] Keyboard sync and manually-off behavior verified.
+- [ ] If OpenRGB hardware is available, desktop/external RGB works without requiring a laptop backlight sysfs device.
+- [ ] If multiple displays are available, per-screen atmosphere renders/scales correctly and remains click-through.
 - [ ] Fullscreen atmosphere pause/resume verified.
 - [ ] Optional systemd guard start/stop/uninstall verified.
 
@@ -32,8 +36,15 @@ Before tagging a new Aura release:
 - [ ] Normal backup is `0600` and redacts location/weather-private data.
 - [ ] Private backup restores optional private state only when explicitly requested.
 - [ ] Restore creates a pre-restore snapshot before changing state.
-- [ ] `reset --keep-favorites --keep-folders` preserves exactly those requested items.
+- [ ] `reset --yes --keep-favorites --keep-folders` preserves exactly those requested items.
 - [ ] A deliberately malformed config is preserved as `.corrupt-<timestamp>.json` and Aura recovers safely.
+
+## Portability claim gates
+- [ ] README hardware claims match `docs/HARDWARE.md`; do not claim universal Linux support.
+- [ ] Unsupported GPU/keyboard telemetry leaves core Aura behavior working.
+- [ ] Hybrid/multi-GPU protection is based on worst detected pressure, not enumeration order.
+- [ ] New vendor/model fixes use capability detection in `aura-hardware.py`, never hostname/model-specific branches in the core.
+- [ ] Bug reports/community validation are tracked for hardware classes not physically available to the maintainer.
 
 ## Release gates
 - [ ] `CHANGELOG.md`, manifest version and docs agree.
