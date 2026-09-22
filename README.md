@@ -21,8 +21,9 @@ Aura is an adaptive appearance runtime for **Omarchy 4 / Quattro**: dynamic wall
 - **History, undo and favorites** — local owner-only state with one-command restore.
 - **Theme scopes** — choose whether wallpaper changes refresh only the shell, terminals, editors, or the whole desktop.
 - **Scenes** — conservative focus, gaming, battery and ambient presets that never silently enable networking.
-- **Diagnostics** — read-only `doctor`, privacy status, redacted config export and safe palette-cache maintenance.
-- **Interactive QML panel** — wallpaper, weather, folders, effects, blur, interval and GPU controls.
+- **Native Omarchy settings** — interval, blur, weather, streaming, effects, keyboard sync and live-theme scope are published through the plugin manifest and mirrored transactionally into Aura runtime config.
+- **Resilient config** — process locking, conflict-aware updates, schema versioning, migrations and preservation of malformed config before safe recovery.
+- **Maintenance tooling** — backup, restore, reset, diagnostics, privacy status, redacted config export and safe palette-cache maintenance.
 - **Security boundaries** — bounded downloads/JSON, image validation, path containment, process identity checks, owner-only private state and a guarded optional systemd unit.
 
 ## Privacy defaults
@@ -43,20 +44,14 @@ Aura-owned private state is written with owner-only permissions (`0600`). Histor
 ```bash
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
 
-# No weather/location requests
 "$PLUGIN_DIR/bin/aura-cycler" location off
-
-# Opt in to HTTPS IP geolocation + Open-Meteo
 "$PLUGIN_DIR/bin/aura-cycler" location auto
-
-# Avoid IP geolocation entirely
 "$PLUGIN_DIR/bin/aura-cycler" location manual 12.9716 77.5946 Bengaluru
-
 "$PLUGIN_DIR/bin/aura-cycler" location status
 "$PLUGIN_DIR/bin/aura-cycler" weather-refresh
 ```
 
-Aura reports live/cached/stale/unavailable weather; it does not substitute `(0, 0)` or invented temperatures.
+Automatic location uses HTTPS. Aura reports live/cached/stale/unavailable weather; it does not substitute `(0, 0)` or invented temperatures.
 
 ## Installation
 
@@ -68,7 +63,7 @@ omarchy plugin add https://github.com/harshithnadig/omarchy-aura-cycler.git --en
 
 The `audit-hardening-v1.4` branch is intentionally a test branch. Do not publish/tag it until the real-system checklist is green.
 
-Aura does **not** silently install Python packages. For the local analysis/theme dependencies:
+Aura does **not** silently install Python packages:
 
 ```bash
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
@@ -76,7 +71,21 @@ python3 -m venv "$HOME/.local/share/omarchy/aura-cycler-venv"
 "$HOME/.local/share/omarchy/aura-cycler-venv/bin/pip" install --require-hashes -r "$PLUGIN_DIR/requirements.lock"
 ```
 
-Required packages: Pillow, NumPy, scikit-learn and materialyoucolor.
+CI verifies the locked dependency set on Python 3.12 and 3.14. Required packages are Pillow, NumPy, scikit-learn and materialyoucolor.
+
+## Native Omarchy settings
+
+Aura v1.4 publishes a `barWidget.defaults` + `barWidget.schema` contract for:
+
+- wallpaper interval;
+- blur;
+- weather sync;
+- online wallpaper streaming;
+- atmospheric effects;
+- keyboard color sync;
+- theme scope.
+
+`BarWidget.qml` is a thin bridge around the proven widget implementation. Explicit Omarchy settings are imported into Aura through the public CLI and all config writes use the same transactional store. Existing v1.3 users are protected during migration: untouched manifest defaults do **not** overwrite their prior Aura preferences.
 
 ## Bar controls
 
@@ -138,18 +147,36 @@ The scope only filters known post-theme refresh helpers. Unknown subprocesses ar
 
 Scenes never enable weather or wallpaper networking automatically.
 
+### Backup, restore and reset
+
+```bash
+# Safe shareable backup: location/weather cache is redacted
+"$PLUGIN_DIR/bin/aura-cycler" backup ~/aura-backup.json
+
+# Private backup: includes private config and the optional Wallhaven key
+"$PLUGIN_DIR/bin/aura-cycler" backup ~/aura-private-backup.json --private
+
+# Restore; Aura creates an automatic owner-only pre-restore snapshot first
+"$PLUGIN_DIR/bin/aura-cycler" restore ~/aura-backup.json
+
+# Return to privacy-safe defaults
+"$PLUGIN_DIR/bin/aura-cycler" reset
+"$PLUGIN_DIR/bin/aura-cycler" reset --keep-favorites
+"$PLUGIN_DIR/bin/aura-cycler" reset --keep-favorites --keep-folders
+```
+
+Backup files are owner-only (`0600`). A normal backup deliberately redacts location/weather-private fields. Use `--private` only for a backup you will protect appropriately.
+
 ### Folders, effects and streaming
 
 ```bash
 "$PLUGIN_DIR/bin/aura-cycler" folder list
 "$PLUGIN_DIR/bin/aura-cycler" folder add ~/Pictures/Wallpapers
 "$PLUGIN_DIR/bin/aura-cycler" folder remove ~/Pictures/Wallpapers
-
 "$PLUGIN_DIR/bin/aura-cycler" effects toggle
 "$PLUGIN_DIR/bin/aura-cycler" effects mode rain
 "$PLUGIN_DIR/bin/aura-cycler" effects layer top
 "$PLUGIN_DIR/bin/aura-cycler" effects intensity 1.0
-
 "$PLUGIN_DIR/bin/aura-cycler" stream-toggle
 ```
 
@@ -158,7 +185,6 @@ Scenes never enable weather or wallpaper networking automatically.
 ```bash
 "$PLUGIN_DIR/bin/aura-cycler" gpu-guard status
 "$PLUGIN_DIR/bin/aura-cycler" gpu-guard toggle-protect
-
 "$PLUGIN_DIR/bin/aura-cycler" keyboard status
 "$PLUGIN_DIR/bin/aura-cycler" keyboard sync-off
 "$PLUGIN_DIR/bin/aura-cycler" keyboard sync-on
@@ -177,6 +203,17 @@ Scenes never enable weather or wallpaper networking automatically.
 ```
 
 `doctor` is read-only and does not perform network requests. Location coordinates are redacted unless explicitly requested with private/full output.
+
+## Config durability
+
+The main Aura config is schema-versioned (`config_version: 2`). Every normal Aura process enters through `bin/aura-cycler`, which installs the same configuration policy before loading feature commands.
+
+- an owner-only process lock serializes writes;
+- stale read/modify/write operations are merged against the latest file to avoid losing unrelated concurrent changes;
+- migration runs are explicit and idempotent;
+- malformed JSON is moved aside as `aura-cycler-config.corrupt-<timestamp>.json` before Aura recovers safe defaults;
+- private config/history/favorites/backup files are written `0600`;
+- native Omarchy settings and Aura runtime settings share one canonical store.
 
 ## GPU Auto-Protect
 
@@ -202,23 +239,34 @@ systemctl --user daemon-reload
 systemctl --user enable --now material-cycler.service
 ```
 
-The external guard verifies plugin id, ownership, path structure and executable entrypoint before running Aura.
-
 ## Architecture
 
-v1.4 intentionally separates behavior changes from the retained engine:
+v1.4 freezes a layered baseline so future features can be added without destabilizing the proven engine:
 
 ```text
-bin/aura-cycler
-    control plane: history/favorites/scenes/doctor/theme scope
-            |
-            v
-bin/aura-cycler-runtime
-    privacy/XDG/GPU/rollback hardening
-            |
-            v
-bin/aura-cycler-core
-    retained v1.3 feature engine
+bin/aura-cycler                 executable public entrypoint
+        |
+        +--> bin/aura-config.py          config/migration/backup policy
+        |
+        v
+bin/aura-cycler-control         history/favorites/scenes/doctor/theme scope
+        |
+        v
+bin/aura-cycler-runtime         privacy/XDG/GPU/rollback hardening
+        |
+        v
+bin/aura-cycler-core            retained v1.3 feature engine
+```
+
+Only `bin/aura-cycler` is executable. The internal layers are import-only and CI enforces that boundary.
+
+The QML bar follows the same pattern:
+
+```text
+BarWidget.qml        native Omarchy settings bridge
+        |
+        v
+BarWidgetImpl.qml    proven Aura bar implementation
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TESTING.md`](docs/TESTING.md), [`docs/PRIVACY.md`](docs/PRIVACY.md), and [`docs/v1.4-control-plane.md`](docs/v1.4-control-plane.md).
@@ -233,7 +281,7 @@ scripts/smoke-test.sh
 omarchy plugin validate .
 ```
 
-CI performs portable checks automatically. Real Quickshell/Hyprland, GPU, keyboard and systemd behavior must still be verified on an actual Omarchy installation before v1.4 is merged.
+CI currently validates both Python **3.12 and 3.14**, Python syntax, the manifest/settings contract, regression tests, smoke tests and QML lint where available. Real Quickshell/Hyprland, GPU, keyboard and systemd behavior must still be verified on an actual Omarchy installation before v1.4 is merged.
 
 ## Removal
 
