@@ -3,11 +3,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI="$ROOT/bin/aura-cycler"
+RUNTIME="$ROOT/bin/aura-cycler-runtime"
+CORE="$ROOT/bin/aura-cycler-core"
+
+# Only the public controller is an executable CLI. The retained implementation
+# layers are import-only so users/services do not accidentally bypass v1.4
+# privacy and control-plane policy.
+test -x "$CLI"
+test ! -x "$RUNTIME"
+test ! -x "$CORE"
 
 python -m py_compile \
-  "$ROOT/bin/aura-cycler" \
-  "$ROOT/bin/aura-cycler-runtime" \
-  "$ROOT/bin/aura-cycler-core" \
+  "$CLI" \
+  "$RUNTIME" \
+  "$CORE" \
   "$ROOT/bin/aura-cycler-service-guard"
 python -m json.tool "$ROOT/manifest.json" >/dev/null
 "$CLI" version
