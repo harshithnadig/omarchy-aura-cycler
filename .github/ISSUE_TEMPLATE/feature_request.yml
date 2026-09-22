@@ -22,9 +22,18 @@ body:
       label: Would this require new network access?
       options:
         - "No"
-        - "Yes, opt-in"
+        - "Yes, explicitly opt-in"
+        - "Unsure"
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Is this hardware/driver specific?
+      options:
+        - "No"
+        - "Yes"
         - "Unsure"
   - type: textarea
     id: tradeoffs
     attributes:
       label: Trade-offs / resource impact
+      description: Consider CPU/GPU/network use, background work, compatibility, or privacy.
