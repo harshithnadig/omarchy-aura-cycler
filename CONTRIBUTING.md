@@ -13,7 +13,23 @@ Thanks for improving Aura Material Cycler.
 
 ## Architecture
 
-Read `docs/ARCHITECTURE.md` before changing runtime boundaries. During the v1.4 hardening cycle, avoid folding the retained core back into the control plane. That separation makes real-system debugging and rollback straightforward.
+Read `docs/ARCHITECTURE.md` and `docs/EXTENDING.md` before changing runtime boundaries.
+
+The v1.4 baseline has one executable entrypoint: `bin/aura-cycler`. Config/control/runtime/core layers are import-only. Do not add a second executable that bypasses config migrations, recovery, privacy policy or process identity checks.
+
+There is one canonical Aura runtime config. New persistent settings must use the installed `runtime.load_config()` / `runtime.save_config()` / `runtime.update_config()` API rather than writing a parallel settings file.
+
+During the v1.4 hardening cycle, avoid folding the retained core back into the control plane. That separation makes real-system debugging and rollback straightforward.
+
+## Configuration changes
+
+For new persistent config:
+
+- choose a privacy-safe default;
+- add normalization/migration semantics where needed;
+- bump the config schema only when a real migration is required;
+- update manifest defaults/schema if the setting belongs in Omarchy's native widget settings;
+- add regression coverage for migration and concurrent/stale updates where relevant.
 
 ## Hardware-specific fixes
 
