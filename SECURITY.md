@@ -1,46 +1,38 @@
 # Security and privacy
 
-Aura is an unsandboxed Omarchy plugin and therefore runs with the permissions of the logged-in user. Review plugin updates before enabling them.
+Aura Material Cycler is a user-session appearance plugin. It deliberately avoids silent package installation, privilege escalation, and remote-script execution.
 
-## Network behavior
+## Trust boundaries
 
-A fresh v1.4 install is designed to work without network access.
+- Wallpaper downloads and remote JSON are bounded and validated before publication/use.
+- Remote wallpaper identifiers are sanitized and cache destinations are contained under Aura's cache/data directory.
+- Fresh v1.4 installs keep weather/location and online wallpaper streaming disabled until explicitly enabled.
+- Automatic IP geolocation uses HTTPS; manual location can avoid IP geolocation entirely.
+- Config/location, history and favorites state is owner-only (`0600`).
+- `doctor` is read-only and performs no network requests.
+- Privacy/config output redacts coordinates by default.
+- GPU Auto-Protect changes Aura's own cycling state; it does not terminate unrelated GPU workloads.
+- The optional systemd guard validates the plugin id, ownership, real path and executable before running it.
+- PID-based daemon stop validates process identity before signaling.
 
-Network requests occur only after the corresponding feature is explicitly enabled:
+## User-owned data
 
-- **Automatic weather location:** `https://ipapi.co/json/`
-- **Weather:** `https://api.open-meteo.com/`
-- **Optional online wallpapers:** Wallhaven and Bing HTTPS endpoints
+Aura maintenance commands do not recursively delete configured wallpaper folders. Palette-cache pruning is limited to Aura-generated palette JSON. Local wallpaper paths may still reveal private directory names; review diagnostic output before sharing it publicly.
 
-Manual coordinates can be used instead of IP geolocation.
+## Network-capable features
 
-Remote JSON responses and wallpaper downloads are size-bounded. Download destinations are restricted to Aura's wallpaper cache and downloaded images are validated before publication.
+Network access can occur only through explicitly enabled weather/location or online wallpaper streaming paths. Local wallpaper rotation, Material You palette extraction, history/favorites, manual scenes, theme scopes and diagnostics are local.
 
-## Local state
+## Reporting
 
-Aura may store:
-- selected wallpaper paths;
-- generated palette data;
-- weather cache;
-- optional location coordinates/city;
-- GPU guard state.
+For a security-sensitive bug, avoid posting secrets, exact private location coordinates, API keys, or other sensitive local data in a public issue. Provide a minimal reproduction and redact private paths/location data where possible.
 
-The main config and palette state are owner-only. Logs may contain operational details such as wallpaper file names and weather lookup failures; do not put secrets in wallpaper paths or API error messages.
+For normal reproducible bugs, use the repository bug-report template and include `bin/aura-cycler doctor` output after reviewing it for local paths you do not want to publish.
 
-## Hardware access
+## Dependency policy
 
-Aura may invoke user-installed tools such as:
-- `nvidia-smi`
-- `asusctl`
-- `openrgb`
-- `brightnessctl`
+Python analysis dependencies are pinned with hashes in `requirements.lock`. Aura does not install them automatically during plugin startup.
 
-It may also read Linux DRM/sysfs telemetry and keyboard backlight state. Aura does not require root privileges and should not be run as root.
+## Release policy
 
-## systemd
-
-Systemd supervision is optional. The service unit launches an external guard stored outside the mutable plugin checkout. The guard verifies the expected plugin id, user ownership, non-symlink path components and executable entry point before launching Aura.
-
-## Reporting a vulnerability
-
-Please open a GitHub issue for non-sensitive security defects. For a vulnerability that would expose credentials, execute unintended commands, escape cache/state boundaries, or overwrite unrelated user data, avoid publishing exploit details until a private reporting route is available; open a minimal issue asking the maintainer for a private contact channel.
+The `audit-hardening-v1.4` branch is a test branch. Do not treat an automated CI pass as proof of real GPU, keyboard, Quickshell, Hyprland or systemd behavior; those boundaries require the real-system release checklist before merge/tag/marketplace revalidation.
