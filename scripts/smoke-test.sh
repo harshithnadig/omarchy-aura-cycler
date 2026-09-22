@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI="$ROOT/bin/aura-cycler"
 CONTROL="$ROOT/bin/aura-cycler-control"
 CONFIG_LAYER="$ROOT/bin/aura-config.py"
+HARDWARE_LAYER="$ROOT/bin/aura-hardware.py"
 RUNTIME="$ROOT/bin/aura-cycler-runtime"
 CORE="$ROOT/bin/aura-cycler-core"
 
@@ -13,6 +14,7 @@ CORE="$ROOT/bin/aura-cycler-core"
 test -x "$CLI"
 test ! -x "$CONTROL"
 test ! -x "$CONFIG_LAYER"
+test ! -x "$HARDWARE_LAYER"
 test ! -x "$RUNTIME"
 test ! -x "$CORE"
 
@@ -20,12 +22,14 @@ python -m py_compile \
   "$CLI" \
   "$CONTROL" \
   "$CONFIG_LAYER" \
+  "$HARDWARE_LAYER" \
   "$RUNTIME" \
   "$CORE" \
   "$ROOT/bin/aura-cycler-service-guard"
 python -m json.tool "$ROOT/manifest.json" >/dev/null
 "$CLI" version
 "$CLI" privacy >/dev/null
+"$CLI" hardware >/dev/null
 "$CLI" config export >/dev/null
 "$CLI" cache status >/dev/null
 "$CLI" doctor --json >/dev/null || true
