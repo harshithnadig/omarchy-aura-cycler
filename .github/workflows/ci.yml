@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["master", "audit-hardening-v1.4"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: requirements.lock
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install --require-hashes -r requirements.lock
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile \
+            bin/aura-cycler \
+            bin/aura-cycler-control \
+            bin/aura-config.py \
+            bin/aura-hardware.py \
+            bin/aura-cycler-runtime \
+            bin/aura-cycler-core \
+            bin/aura-cycler-service-guard
+
+      - name: Validate manifest
+        run: |
+          python -m json.tool manifest.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          m = json.loads(Path("manifest.json").read_text())
+          assert m["schemaVersion"] == 1
+          assert m["id"] == "harshith.aura-cycler"
+          assert m["version"] == "1.4.0"
+          assert set(m["kinds"]) == {"service", "bar-widget"}
+          bar = m["barWidget"]
+          assert bar["allowMultiple"] is False
+          assert bar["defaults"]["weatherSync"] is False
+          assert bar["defaults"]["streamOnline"] is False
+          assert bar["defaults"]["screenEffects"] is False
+          schema_keys = {item["key"] for item in bar["schema"]}
+          assert schema_keys == set(bar["defaults"])
+          for path in m["entryPoints"].values():
+              p = Path(path)
+              assert not p.is_absolute()
+              assert ".." not in p.parts
+              assert p.is_file(), path
+          PY
+
+      - name: Run regression tests
+        run: pytest -q
+
+      - name: Run repository smoke checks
+        run: scripts/smoke-test.sh
+
+      - name: Optional QML lint
+        shell: bash
+        run: |
+          if command -v qmllint >/dev/null 2>&1; then
+            qmllint BarWidget.qml BarWidgetImpl.qml Panel.qml WeatherService.qml
+          else
+            echo "qmllint not installed on runner; skipping"
+          fi

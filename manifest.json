@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "harshith.aura-cycler",
   "name": "Aura Material Cycler",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Aura Project Contributors",
   "license": "MIT",
-  "description": "Adaptive desktop environment with Material You wallpaper palettes, atmospheric weather effects, ambient keyboard lighting synchronization, and GPU-aware protection against resource pressure.",
+  "description": "Adaptive Omarchy appearance runtime with Material You palettes, opt-in live weather, atmospheric effects, ambient keyboard lighting, and cross-vendor GPU-aware protection.",
   "kinds": [
     "service",
     "bar-widget"
@@ -17,57 +17,72 @@
   },
   "barWidget": {
     "displayName": "Aura Cycler",
-    "description": "Dynamic Material You wallpaper, weather atmosphere, ambient keyboard sync, and GPU-aware performance protection",
+    "description": "Adaptive Material You wallpaper, weather atmosphere, ambient keyboard sync, and GPU-aware performance protection",
     "category": "Appearance",
+    "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "interval": 300,
-      "weatherSync": true,
       "blur": 12,
+      "weatherSync": false,
       "streamOnline": false,
-      "autoProtect": false
+      "screenEffects": false,
+      "keyboardSync": true,
+      "themeScope": "all"
     },
     "schema": [
       {
         "key": "interval",
         "type": "integer",
-        "label": "Rotation Interval (seconds)",
-        "min": 15,
-        "max": 3600,
-        "step": 15,
+        "label": "Wallpaper interval (seconds)",
+        "min": 5,
+        "max": 86400,
+        "step": 5,
         "defaultValue": 300,
-        "description": "Time in seconds between automatic wallpaper rotations. New installs default to 5 minutes to reduce CPU/GPU and network load."
-      },
-      {
-        "key": "weatherSync",
-        "type": "boolean",
-        "label": "Weather-Adaptive Wallpapers",
-        "defaultValue": true,
-        "description": "Automatically match wallpaper theme and lighting to current outdoor weather conditions."
+        "description": "How often Aura rotates wallpapers."
       },
       {
         "key": "blur",
         "type": "integer",
-        "label": "Liquid Glass Blur (px)",
+        "label": "Glass blur",
         "min": 0,
         "max": 24,
         "step": 1,
-        "defaultValue": 12,
-        "description": "Compositor background blur intensity in pixels."
+        "defaultValue": 12
+      },
+      {
+        "key": "weatherSync",
+        "type": "boolean",
+        "label": "Weather sync",
+        "defaultValue": false,
+        "description": "Opt in to live weather. Location mode is still controlled by Aura."
       },
       {
         "key": "streamOnline",
         "type": "boolean",
-        "label": "Stream Fresh 4K Online",
+        "label": "Online wallpapers",
         "defaultValue": false,
-        "description": "Download authentic 4K/UHD wallpapers from Wallhaven and Bing archives when explicitly enabled."
+        "description": "Allow Aura to fetch wallpapers from configured HTTPS sources."
       },
       {
-        "key": "autoProtect",
+        "key": "screenEffects",
         "type": "boolean",
-        "label": "GPU Auto-Protect",
-        "defaultValue": false,
-        "description": "When explicitly enabled in the panel, pause material cycling during critical GPU VRAM or temperature pressure and resume only if Aura paused it."
+        "label": "Atmospheric effects",
+        "defaultValue": false
+      },
+      {
+        "key": "keyboardSync",
+        "type": "boolean",
+        "label": "Keyboard color sync",
+        "defaultValue": true
+      },
+      {
+        "key": "themeScope",
+        "type": "enum",
+        "label": "Live theme scope",
+        "options": ["shell", "terminals", "editors", "all"],
+        "defaultValue": "all",
+        "description": "Controls which already-running applications Aura refreshes after a palette change."
       }
     ]
   }

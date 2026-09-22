@@ -1,36 +1,13 @@
-# Marketplace submission draft
+# Marketplace notes for Aura Material Cycler
 
-Use this body when editing the existing marketplace issue after the hardened
-repository commit is pushed.
+The currently published marketplace snapshot remains v1.3 at the approved `master` commit. The `audit-hardening-v1.4` branch is intentionally **not** a marketplace submission yet.
 
-Title: `[Plugin]: Aura Material Cycler`
+Before proposing v1.4 for marketplace revalidation:
 
-```
-### Repository URL
+1. complete `RELEASE_CHECKLIST.md` on a real Omarchy system;
+2. merge the tested branch to `master`;
+3. tag/release the exact tested commit;
+4. update the marketplace submission to the exact new `master` SHA;
+5. explicitly call out the network/service/package capabilities for security review.
 
-https://github.com/harshithnadig/omarchy-aura-cycler
-
-### Category
-
-Appearance
-
-### Tags
-
-bar, quickshell, hyprland
-
-### Suggest a missing tag
-
-_No response_
-
-### Maintainer notes
-
-Adaptive desktop environment with local Material You palette extraction, optional Open-Meteo weather adaptation, click-through atmospheric effects, optional ambient keyboard lighting synchronization, and GPU-aware performance protection. New installs default to local/offline rotation every five minutes; online 4K downloads and systemd supervision are opt-in. GPU telemetry is read-only by default; Auto-Protect is opt-in and only pauses an already-active material-cycler service during critical pressure, resuming it only when Aura performed the pause. The plugin uses owner-only locks and caches palette results by image path and modification time. MIT licensed.
-
-### Submission checklist
-
-- [x] The repository is public and contains installation and removal instructions.
-- [x] I have documented the plugin license and any external dependencies.
-- [x] I confirm that I own or have permission to submit this plugin and its preview assets.
-- [x] The plugin does not overwrite user configuration without explicit consent.
-- [x] I understand that approval is for listing and is not a security review.
-```
+v1.4 adds no silent package installation or privilege escalation. Fresh installs keep weather/location and online wallpaper streaming off until explicitly enabled. Automatic IP geolocation is HTTPS-only; manual location avoids IP geolocation. GPU Auto-Protect pauses Aura's own expensive cycling work rather than stopping unrelated workloads. History/favorites and diagnostics are local-only.

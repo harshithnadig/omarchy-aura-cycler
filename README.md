@@ -1,172 +1,219 @@
 # Aura Material Cycler for Omarchy
 
-[![Omarchy Plugin](https://img.shields.io/badge/omarchy-plugin-blue)](https://omarchy.org)
+[![Omarchy Plugin](https://img.shields.io/badge/Omarchy-plugin-blue)](https://omarchy.org)
+[![CI](https://github.com/harshithnadig/omarchy-aura-cycler/actions/workflows/ci.yml/badge.svg)](https://github.com/harshithnadig/omarchy-aura-cycler/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An intelligent dynamic wallpaper engine, Material You on-device theme generator, real-time outdoor weather synchronizer, universal ambient keyboard backlight synchronizer, and GPU-aware performance guard for [Omarchy Linux](https://omarchy.org).
+Aura is an adaptive appearance runtime for **Omarchy 4 / Quattro**: dynamic wallpapers, local Material You palettes, optional live-weather atmosphere, keyboard lighting integration, GPU-aware protection, wallpaper history/favorites and scriptable desktop scenes.
+
+> **v1.4 hardening branch:** fresh installs are local-first. Weather/location and online wallpaper downloads require explicit opt-in.
 
 ![Aura Material Cycler](preview.png)
 
 ## Highlights
 
-- **Dynamic 4K Wallpaper Engine**: Automatically cycles authentic 4K/UHD photography and art from local directories. Optional Wallhaven/Bing streaming is disabled by default and can be enabled explicitly.
-- **On-Screen Atmospheric Weather Effects**: Renders realistic visual particle effects directly on your display across all weather types:
-  - 󰖗 **Rain / Drizzle**: Falling raindrop streaks with realistic slanting speed and bottom splash ripples.
-  - 󰖓 **Thunderstorm**: Deluge rainfall with branching lightning bolts and full-screen illumination flashes.
-  - 󰖘 **Snow**: Drifting floating snowflakes with sinuous wobbles across depth layers.
-  - 󰖙 **Sunny Day**: Radiant warm golden radial glow with shimmering floating sun motes.
-  - 󰖔 **Clear Night**: Twinkling star field with realistic streaking shooting stars (meteors).
-  - 󰖑 **Fog / Mist**: Soft drifting atmospheric mist patches with pulsing opacity.
-  - **100% Click-Through**: Zero disruption to workflows (`mask: Region {}` passes all clicks and input directly to underlying apps).
-  - **Layer Placement Control**: Toggle rendering right on the wallpaper behind windows (`WlrLayer.Bottom`) or immersive over windows (`WlrLayer.Top`).
-  - **Smart Fullscreen Auto-Pause**: Listens to Hyprland socket2 to instantly unmap/pause animation during fullscreen apps, gaming, or video playback (0% CPU/GPU).
-- **Live Weather-Adaptive Atmosphere**: Automatically queries real-time outdoor weather conditions (via Open-Meteo) and streams matching wallpapers and screen effects.
-- **Aether On-Device Material You Theme Engine**: Automatically analyzes active wallpapers using local Pillow + K-Means + Google Material You Monet HCT, generating a full palette and dynamically restyling the **entire Omarchy desktop** (top bar, window borders, menus, Chrome browser policies, Alacritty, Kitty, Ghostty, Foot, VS Code, Obsidian, and Helix). Palette results are cached by image path and modification time.
-- **Universal Ambient Keyboard Backlight Sync**: Synchronizes the wallpaper's primary accent hue directly with your laptop keyboard backlight. Supports all laptop keyboards with Linux backlight drivers: Apple MacBooks (Intel & Apple Silicon via Asahi Linux), Lenovo ThinkPads, Framework, Dell, HP, System76, and RGB-capable laptops (via OpenRGB or asusctl), while strictly respecting manual user brightness levels.
-- **GPU-aware Performance Guard**: Shows VRAM, utilization, temperature, and compute workloads in the same panel. Optional Auto-Protect pauses only an already-active Aura service during critical GPU pressure and resumes it only when Aura performed the pause.
-- **Interactive Settings Panel (`Panel.qml`)**:
-  - Live outdoor weather card with real-time temperature, condition icon, and weather-adaptive toggle.
-  - Dedicated Atmospheric Weather Effects card with toggle, mode selector pills (`Auto`, `Rain`, `Thunder`, `Snow`, `Sun`, `Stars`, `Mist`), layer placement button (`Wallpaper` vs `Over Windows`), and intensity cycle (`Subtle`, `Normal`, `Dramatic`).
-  - Active wallpaper card with live image thumbnail and extracted Monet accent color swatch.
-  - Quick action playback controls: Next Wallpaper, Pause/Resume, and Sync.
-  - Rotation Timeout (Interval) selector with one-click pills: `15s`, `30s`, `1m`, `5m`, `10m`, `30m`, `1h`.
-  - Wallpaper Folders manager: add, remove, and list custom directories.
-  - Liquid Glass Blur selector: 0px to 24px.
-  - Online 4K stream toggle switch.
-- **Keyboard-First & Mouse-Free**: Full control via Hyprland keybindings without needing a mouse.
-- **Resource-Conscious Persistence**: New installs use a 5-minute rotation interval and keep online 4K downloads disabled until enabled. The user-session daemon uses an owner-only lock, avoids duplicate processes, and can optionally be supervised by systemd.
+- Dynamic local wallpaper rotation + optional Wallhaven/Bing streaming.
+- On-device Material You palette extraction and Omarchy theme generation.
+- Rain, thunder, snow, sun, stars and fog with fullscreen-aware pausing.
+- Runtime hardware adaptation for laptops/desktops instead of machine-model checks.
+- RGB/keyboard integration that respects manual brightness/off state and supports OpenRGB desktop keyboards without laptop backlight sysfs.
+- NVIDIA + AMD + Intel GPU discovery, including hybrid/multi-GPU aggregation where telemetry is exposed.
+- GPU Auto-Protect that reacts to the worst detected GPU pressure and pauses expensive Aura work without killing the daemon.
+- History, undo, favorites, theme scopes and manual focus/gaming/battery/ambient scenes.
+- Native Omarchy widget settings for interval, blur, weather, streaming, effects, keyboard sync and theme scope.
+- Versioned, locked, recoverable config with backup/restore/reset tooling.
+- Bounded downloads/JSON, path containment, process identity checks and owner-only private state.
+- Bounded private logs with automatic rotation so long-running sessions cannot grow the Aura log indefinitely.
 
-## Interactive Settings Panel & Bar Controls
+## Hardware portability
 
-| Action | Control | Description |
-| :--- | :--- | :--- |
-| **Open Settings Panel** | **Left Click** on bar widget (`󰸉`) | Opens interactive GUI to manage folders, timeout, weather, and blur |
-| **Pause / Resume** | **Right Click** on bar widget | Toggles the auto-rotation loop |
-| **Cycle Speed** | **Middle Click** on bar widget | Cycles through interval speeds: 15s → 30s → 1m → 5m → 10m |
-| **Fine-Tune Timer** | **Mouse Wheel** over widget | Scroll up or down over the widget to adjust rotation interval |
-| **Live Tooltip** | **Hover** | Displays active state, current timer, live weather, and theme accent |
+Aura is built for the **Omarchy hardware envelope**, not one laptop model. Optional hardware features use runtime capability detection and gracefully become unavailable when a driver/device exposes no compatible controls.
 
-## Keyboard Shortcuts (Mouse-Free)
+Expected shapes include NVIDIA-, AMD- and Intel-based laptops/desktops; hybrid and multi-GPU systems; ordinary monochrome laptop backlights; ASUS RGB; OpenRGB-controlled desktop/external keyboards; machines with no lighting controls; and systems/VMs where no readable GPU telemetry exists.
 
-| Shortcut | Action | Description |
-| :--- | :--- | :--- |
-| `SUPER + B` | **Next Wallpaper & Recolor** | Immediately rotates wallpaper, recolors desktop theme, and syncs keyboard lighting |
-| `SUPER + ALT + P` | **Pause / Resume** | Toggles the background wallpaper rotation daemon |
-| `SUPER + ALT + I` | **Cycle Rotation Speed** | Cycles interval between 15s → 30s → 60s → 5m → 10m → 30m → 1h |
+On a hybrid or multi-GPU system Aura exposes a per-GPU list and feeds Auto-Protect the highest VRAM pressure, utilization and temperature seen across detected GPUs instead of trusting the first enumerated card.
 
-## CLI Commands
+Inspect what Aura sees on any machine with:
 
-The engine ships with `bin/aura-cycler`. Use the installed plugin path unless you create your own shell alias:
+```bash
+"$PLUGIN_DIR/bin/aura-cycler" hardware
+```
+
+Unsupported optional hardware must not stop wallpaper rotation, palettes, scenes, history/favorites or the rest of Aura. See [`docs/HARDWARE.md`](docs/HARDWARE.md) for the portability contract and test matrix.
+
+## Privacy defaults
+
+A fresh v1.4 install starts with weather/location, atmospheric effects and online wallpaper streaming **off**. GPU Auto-Protect is also off until enabled. Keyboard color sync is enabled, but Aura does not force a manually-off backlight on.
+
+Automatic location uses HTTPS. Manual coordinates avoid IP geolocation entirely. Aura does not invent weather values or silently fall back to `(0, 0)`.
 
 ```bash
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
 
-# Playback & Rotation
-"$PLUGIN_DIR/bin/aura-cycler" next                  # Skip to next wallpaper and recolor system
-"$PLUGIN_DIR/bin/aura-cycler" interval 30           # Set rotation interval to 30 seconds
-"$PLUGIN_DIR/bin/aura-cycler" interval 300          # Set rotation interval to 5 minutes
-"$PLUGIN_DIR/bin/aura-cycler" start                 # Resume rotation daemon
-"$PLUGIN_DIR/bin/aura-cycler" stop                  # Pause rotation daemon
-"$PLUGIN_DIR/bin/aura-cycler" toggle                # Toggle pause/resume
-
-# Weather & Atmospheric Effects
-"$PLUGIN_DIR/bin/aura-cycler" weather-toggle        # Toggle real-time weather-adaptive wallpaper selection
-"$PLUGIN_DIR/bin/aura-cycler" stream-toggle         # Toggle online 4K streaming (Wallhaven/Bing)
-"$PLUGIN_DIR/bin/aura-cycler" effects toggle        # Toggle on-screen atmospheric weather particles on/off
-"$PLUGIN_DIR/bin/aura-cycler" effects mode rain     # Force specific weather effect (auto|rain|thunder|snow|sun|stars|fog)
-"$PLUGIN_DIR/bin/aura-cycler" effects layer top     # Toggle layer (bottom = on wallpaper behind windows, top = over windows)
-"$PLUGIN_DIR/bin/aura-cycler" effects intensity 1.5 # Set particle density/intensity (0.5 = subtle, 1.0 = normal, 1.5 = dramatic)
-
-# Custom Wallpaper Folders
-"$PLUGIN_DIR/bin/aura-cycler" folder list           # List configured wallpaper folders & image counts
-"$PLUGIN_DIR/bin/aura-cycler" folder add ~/Pictures/Wallpapers   # Add a custom wallpaper folder
-"$PLUGIN_DIR/bin/aura-cycler" folder remove ~/Pictures/Wallpapers # Remove a folder from rotation
-
-# Appearance & Hardware
-"$PLUGIN_DIR/bin/aura-cycler" blur 12               # Set glass blur intensity (0 to 24px)
-"$PLUGIN_DIR/bin/aura-cycler" keyboard off          # Turn keyboard LEDs off (disables sync writes)
-"$PLUGIN_DIR/bin/aura-cycler" keyboard allow        # Re-enable keyboard sync writes
-"$PLUGIN_DIR/bin/aura-cycler" gpu-guard status      # Read GPU pressure and compute workloads
-"$PLUGIN_DIR/bin/aura-cycler" gpu-guard toggle-protect # Toggle opt-in Aura Auto-Protect
-"$PLUGIN_DIR/bin/aura-cycler" status                # View current service, weather, and folder status
-"$PLUGIN_DIR/bin/aura-cycler" status-json           # Export complete machine-readable state JSON
+"$PLUGIN_DIR/bin/aura-cycler" location off
+"$PLUGIN_DIR/bin/aura-cycler" location auto
+"$PLUGIN_DIR/bin/aura-cycler" location manual 12.9716 77.5946 Bengaluru
 ```
+
+Private Aura state is written with owner-only permissions (`0600`).
 
 ## Installation
 
-Install directly via the Omarchy plugin CLI:
+Published marketplace version:
 
 ```bash
 omarchy plugin add https://github.com/harshithnadig/omarchy-aura-cycler.git --enable
 ```
 
-Or install manually:
+The `audit-hardening-v1.4` branch remains a test branch until the real-system release checklist is complete.
+
+Aura never installs Python packages silently. Install the locked theme-analysis dependencies explicitly:
 
 ```bash
-git clone https://github.com/harshithnadig/omarchy-aura-cycler.git ~/.config/omarchy/plugins/harshith.aura-cycler
-omarchy plugin enable harshith.aura-cycler
-```
-
-Enabling the plugin starts a user-session daemon from the plugin directory. For
-systemd supervision across shell restarts, install the guard and copy the unit
-outside the plugin checkout. The guard verifies the expected plugin id, current
-user ownership, real (non-symlink) path components, and executable entrypoint
-before launching Aura. If the checkout disappears or is replaced by a foreign
-plugin, it removes only the unit it installed and exits without executing it:
-
-```bash
-PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
-GUARD_PATH="$HOME/.local/libexec/omarchy/harshith.aura-cycler-service-guard"
-UNIT_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
-install -Dm755 "$PLUGIN_DIR/bin/aura-cycler-service-guard" "$GUARD_PATH"
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-install -Dm644 "$PLUGIN_DIR/systemd/material-cycler.service" "$UNIT_PATH"
-systemctl --user daemon-reload
-systemctl --user enable --now material-cycler.service
-```
-
-The default mode is local/offline: 5-minute rotation and no online wallpaper
-downloads. Enable the online stream from the panel or with
-`"$PLUGIN_DIR/bin/aura-cycler" stream-toggle` when desired.
-
-## Removal
-
-To uninstall the plugin:
-
-```bash
-PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
-GUARD_PATH="$HOME/.local/libexec/omarchy/harshith.aura-cycler-service-guard"
-UNIT_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/material-cycler.service"
-"$PLUGIN_DIR/bin/aura-cycler" stop
-systemctl --user disable --now material-cycler.service 2>/dev/null || true
-rm -f "$UNIT_PATH" "$GUARD_PATH"
-systemctl --user daemon-reload
-omarchy plugin disable harshith.aura-cycler
-omarchy plugin remove harshith.aura-cycler
-```
-
-## External Dependencies
-
-- Keyboard lighting: Standard Linux `/sys/class/leds` (Apple, Lenovo ThinkPad, Dell, Framework, generic), `brightnessctl`, or optional RGB tools (`asusctl`, `openrgb`)
-- `python3`, `python3-venv`, `pillow`, `materialyoucolor`, `scikit-learn`, `numpy` (required for image validation and palette extraction)
-- standard HTTPS networking (only for weather and optional 4K wallpaper streaming)
-
-The plugin does not silently install packages or run a remote installer. If the
-Python packages are not already available, create a user-owned environment and
-install them before enabling rotation:
-
-```bash
-PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/harshith.aura-cycler"
 python3 -m venv "$HOME/.local/share/omarchy/aura-cycler-venv"
 "$HOME/.local/share/omarchy/aura-cycler-venv/bin/pip" install --require-hashes -r "$PLUGIN_DIR/requirements.lock"
 ```
 
-## Compatibility
+CI verifies the exact lock on Python **3.12 and 3.14**.
 
-- Omarchy 4.0+ (Quattro)
-- Compatible with all displays (1080p, 1440p, 4K UHD, ultrawide)
-- Compatible with all laptop keyboard backlights: Apple MacBooks (Intel & Apple Silicon via Asahi Linux), Lenovo ThinkPads, Framework, Dell, HP, System76, ASUS ROG / TUF (`asusctl`), OpenRGB devices, and generic Linux PCs (gracefully degrades if no backlight hardware is present)
+## Controls
+
+| Action | Bar control |
+|---|---|
+| Open Aura panel | Left-click |
+| Pause/resume | Right-click |
+| Cycle speed | Middle-click |
+| Fine-tune interval | Mouse wheel |
+
+Common CLI commands:
+
+```bash
+# Runtime
+"$PLUGIN_DIR/bin/aura-cycler" status
+"$PLUGIN_DIR/bin/aura-cycler" status-json
+"$PLUGIN_DIR/bin/aura-cycler" next
+"$PLUGIN_DIR/bin/aura-cycler" toggle
+"$PLUGIN_DIR/bin/aura-cycler" interval 300
+"$PLUGIN_DIR/bin/aura-cycler" blur 12
+
+# History / favorites
+"$PLUGIN_DIR/bin/aura-cycler" previous
+"$PLUGIN_DIR/bin/aura-cycler" history list
+"$PLUGIN_DIR/bin/aura-cycler" favorite
+"$PLUGIN_DIR/bin/aura-cycler" favorites list
+
+# Theme scope / scenes
+"$PLUGIN_DIR/bin/aura-cycler" theme-scope shell
+"$PLUGIN_DIR/bin/aura-cycler" theme-scope terminals
+"$PLUGIN_DIR/bin/aura-cycler" theme-scope editors
+"$PLUGIN_DIR/bin/aura-cycler" theme-scope all
+"$PLUGIN_DIR/bin/aura-cycler" scene apply focus
+"$PLUGIN_DIR/bin/aura-cycler" scene apply gaming
+"$PLUGIN_DIR/bin/aura-cycler" scene apply battery
+"$PLUGIN_DIR/bin/aura-cycler" scene apply ambient
+
+# GPU / keyboard / hardware
+"$PLUGIN_DIR/bin/aura-cycler" hardware
+"$PLUGIN_DIR/bin/aura-cycler" gpu-guard status
+"$PLUGIN_DIR/bin/aura-cycler" gpu-guard toggle-protect
+"$PLUGIN_DIR/bin/aura-cycler" keyboard sync-on
+"$PLUGIN_DIR/bin/aura-cycler" keyboard sync-off
+
+# Diagnostics / privacy
+"$PLUGIN_DIR/bin/aura-cycler" doctor
+"$PLUGIN_DIR/bin/aura-cycler" privacy
+"$PLUGIN_DIR/bin/aura-cycler" config export
+"$PLUGIN_DIR/bin/aura-cycler" cache status
+```
+
+Scenes never enable weather or wallpaper networking implicitly.
+
+## Backup and recovery
+
+```bash
+# Standard backup: coordinates/weather-private state are redacted.
+# Local wallpaper/folder paths can still be present; review before sharing.
+"$PLUGIN_DIR/bin/aura-cycler" backup ~/aura-backup.json
+
+# Private backup: also includes private config and optional Wallhaven key.
+"$PLUGIN_DIR/bin/aura-cycler" backup ~/aura-private-backup.json --private
+
+# Restore creates an automatic owner-only pre-restore snapshot first.
+"$PLUGIN_DIR/bin/aura-cycler" restore ~/aura-backup.json
+
+# Return to privacy-safe defaults. Reset is deliberately guarded by --yes.
+"$PLUGIN_DIR/bin/aura-cycler" reset --yes
+"$PLUGIN_DIR/bin/aura-cycler" reset --yes --keep-favorites --keep-folders
+```
+
+Backup files are `0600`. A standard backup is **not automatically safe to publish** because local paths may reveal usernames or directory names.
+
+Malformed main config is preserved as `aura-cycler-config.corrupt-<timestamp>.json` before Aura recovers safe defaults.
+
+## Stable configuration model
+
+Aura v1.4 uses `config_version: 2` and one canonical runtime config.
+
+- An owner-only process lock serializes writes.
+- Stale read/modify/write operations merge their actual changes into the newest config instead of overwriting unrelated updates.
+- Migrations are explicit and idempotent.
+- Native Omarchy widget settings and Aura CLI/panel changes converge on the same runtime store.
+- Untouched manifest defaults do not overwrite existing v1.3 preferences during first migration.
+
+## Architecture
+
+Only `bin/aura-cycler` is executable:
+
+```text
+bin/aura-cycler                 public entrypoint
+        |
+        +--> bin/aura-config.py          config/migration/recovery/backup
+        |
+        +--> bin/aura-hardware.py        GPU/keyboard capability adaptation
+        |
+        v
+bin/aura-cycler-control         history/favorites/scenes/diagnostics
+        |
+        v
+bin/aura-cycler-runtime         privacy/XDG/network/rollback hardening
+        |
+        v
+bin/aura-cycler-core            retained v1.3 feature engine
+```
+
+The bar follows the same stability pattern:
+
+```text
+BarWidget.qml        native Omarchy settings bridge
+        |
+        v
+BarWidgetImpl.qml    proven Aura bar behavior/UI
+```
+
+The existing large `Panel.qml` is intentionally not structurally rewritten during v1.4 hardening. Future UI features can build on the verified baseline instead of mixing a panel redesign into security/runtime changes.
+
+See:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/HARDWARE.md`](docs/HARDWARE.md)
+- [`docs/EXTENDING.md`](docs/EXTENDING.md)
+- [`docs/TESTING.md`](docs/TESTING.md)
+- [`docs/PRIVACY.md`](docs/PRIVACY.md)
+- [`SECURITY.md`](SECURITY.md)
+- [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md)
+
+## Development
+
+```bash
+python -m pip install pytest
+python -m pip install --require-hashes -r requirements.lock
+pytest -q
+scripts/smoke-test.sh
+omarchy plugin validate .
+```
+
+GitHub Actions validates Python 3.12 + 3.14, Python syntax, manifest/settings contract, regression tests and smoke checks. The workflow also runs `qmllint` when that tool is present on the runner; a full QML/type check still requires the real Omarchy/Quickshell import environment. Real Quickshell/Hyprland and vendor hardware behavior must still be verified on actual Omarchy machines/community reports before claiming a specific device/backend is supported.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE).

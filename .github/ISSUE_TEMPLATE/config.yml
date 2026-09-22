@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: v1.4 testing guide
+    url: https://github.com/harshithnadig/omarchy-aura-cycler/blob/audit-hardening-v1.4/docs/TESTING.md
+    about: Check the real-system testing and diagnostic steps before filing a v1.4 hardware/runtime issue.

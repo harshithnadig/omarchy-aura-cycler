@@ -1,1993 +1,264 @@
 #!/usr/bin/env python3
+"""Stable public entrypoint for Aura Material Cycler v1.4.
+
+All launches pass through this file so configuration migrations, locking,
+recovery, hardware adaptation and maintenance policy cannot be bypassed
+accidentally.
+"""
+
+import importlib.util
+import json
 import os
 import sys
-
-# Auto-detect dedicated venv if available and not already in it
-_VENV_PYTHON = os.path.expanduser("~/.local/share/omarchy/aura-cycler-venv/bin/python")
-if os.path.exists(_VENV_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(_VENV_PYTHON):
-    try:
-        os.execv(_VENV_PYTHON, [_VENV_PYTHON] + sys.argv)
-    except OSError:
-        pass
-
 import time
-import json
-import random
-import signal
-import subprocess
-import re
-import csv
-import hashlib
-import urllib.request
-import urllib.parse
-import base64
-import fcntl
-import shutil
-import tempfile
-import warnings
-from contextlib import contextmanager
-warnings.simplefilter("ignore")
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 
-# Keep image analysis from competing aggressively with local inference or the
-# desktop shell when the CLI is invoked outside systemd.
-for _thread_env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-    os.environ.setdefault(_thread_env, "1")
+HERE = Path(__file__).resolve().parent
+PUBLIC_PATH = Path(__file__).resolve()
+CONTROL_PATH = HERE / "aura-cycler-control"
+CONFIG_LAYER_PATH = HERE / "aura-config.py"
+HARDWARE_LAYER_PATH = HERE / "aura-hardware.py"
+MAX_LOG_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 2
 
-CACHE_DIR = os.path.expanduser("~/.local/share/omarchy/dynamic-wallpapers")
-STATE_DIR = os.path.expanduser("~/.local/state/omarchy")
-CONFIG_FILE = os.path.join(STATE_DIR, "aura-cycler-config.json")
-PID_FILE = os.path.join(STATE_DIR, "material-cycler.pid")
-LOG_FILE = os.path.join(STATE_DIR, "material-cycler.log")
-INTERVAL_FILE = os.path.join(STATE_DIR, "material-cycler-interval.txt")
-BLUR_FILE = os.path.join(STATE_DIR, "glass-blur.txt")
-PALETTE_STATE_FILE = os.path.join(STATE_DIR, "wallpaper-palette.json")
-PALETTE_CACHE_DIR = os.path.expanduser("~/.cache/omarchy/aura-cycler/palettes")
-CURRENT_THEME_DIR = os.path.join(STATE_DIR, "current", "theme")
-NEXT_THEME_DIR = os.path.join(STATE_DIR, "current", "next-theme")
-THEME_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "omarchy-theme-set.lock")
-KEYBOARD_LOCK_FILE = os.path.join(STATE_DIR, "keyboard-color.lock")
-DAEMON_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "aura-cycler.lock")
-GPU_GUARD_LOCK_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "aura-cycler-gpu-guard.lock")
-WALLHAVEN_KEY_FILE = os.path.expanduser("~/.config/aura-cycler/wallhaven.key")
 
-THEME_TEMPLATE_FILES = (
-    "alacritty.toml",
-    "btop.theme",
-    "chromium.theme",
-    "claude.json",
-    "foot.ini",
-    "ghostty.conf",
-    "gum_env.lua",
-    "helix.toml",
-    "hermes.yaml",
-    "hyprland-preview-share-picker.css",
-    "hyprland.lua",
-    "keyboard.rgb",
-    "kitty.conf",
-    "neovim.lua",
-    "obsidian.css",
-    "pi.json",
-    "shell.toml",
-    "vscode-theme.json",
-)
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
-MAX_WALLPAPER_PIXELS = 16_000_000
-MAX_WALLPAPER_BYTES = 25 * 1024 * 1024  # 25 MiB download size limit
-MAX_JSON_BYTES = 1024 * 1024            # 1 MiB JSON API response limit
-SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+def _load(name, path):
+    if not path.is_file():
+        raise SystemExit(f"Aura component is missing: {path}")
+    loader = SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
-last_keyboard_level = None
-last_keyboard_color = None
-QUIET_OUTPUT = False
 
-def _shutdown_daemon(_signum, _frame):
-    raise KeyboardInterrupt
+control = _load("aura_cycler_control", CONTROL_PATH)
+config_layer = _load("aura_cycler_config", CONFIG_LAYER_PATH)
+hardware_layer = _load("aura_cycler_hardware", HARDWARE_LAYER_PATH)
 
-signal.signal(signal.SIGTERM, _shutdown_daemon)
+# Omarchy historically stores shell.json under ~/.config/omarchy even on some
+# setups that otherwise use XDG_CONFIG_HOME. Prefer the config-layer XDG lookup,
+# then fall back to the standard Omarchy path so native settings remain usable
+# on both layouts without changing Aura's own XDG-aware state paths.
+_original_shell_explicit_settings = config_layer._shell_explicit_settings
 
-DEFAULT_CONFIG = {
-    "custom_folders": [
-        os.path.expanduser("~/.local/share/omarchy/dynamic-wallpapers"),
-        os.path.expanduser("~/.cache/omarchy/wallpapers"),
-        os.path.expanduser("~/Pictures/Wallpapers")
-    ],
-    "weather_sync": True,
-    "stream_online": False,
-    "interval": 300,
-    "blur": 12,
-    "screen_effects": True,
-    "screen_effects_mode": "auto",
-    "screen_effects_layer": "bottom",
-    "screen_effects_intensity": 1.0,
-    "weather_cache": None,
-    "location_cache": None,
-    "gpu_guard": {
-        "auto_protect": False,
-        "warn_vram_percent": 75,
-        "critical_vram_percent": 90,
-        "warn_temperature": 80,
-        "critical_temperature": 88,
-        "aura_paused": False,
-        "last_action": ""
-    }
-}
 
-AESTHETIC_TOPICS = [
-    "cyberpunk", "landscape", "nature", "space", "scifi",
-    "minimalism", "architecture", "tokyo", "abstract", "neon",
-    "mountains", "sunset", "fantasy", "nordic", "aurora"
-]
+def _standard_shell_fallback(active_control):
+    explicit = _original_shell_explicit_settings(active_control)
+    if explicit:
+        return explicit
 
-WMO_WEATHER_MAP = {
-    0: ("Clear Sky", "󰖙", "󰖔", ["starry night milky way 4k", "clear night sky 4k", "astrophotography 4k", "cyberpunk neon night 4k"], ["bright sunny landscape 4k", "sunny alpine mountains 4k", "golden hour landscape 4k"]),
-    1: ("Mainly Clear", "󰖕", "󰖖", ["clear starry sky 4k", "aurora borealis 4k"], ["warm sunny nature 4k", "minimalist blue sky 4k"]),
-    2: ("Partly Cloudy", "󰖕", "󰖖", ["cloudy night sky 4k", "moonlit clouds 4k"], ["dramatic cloudy sky 4k", "cloudy mountain landscape 4k"]),
-    3: ("Overcast", "󰖐", "󰖐", ["moody dark clouds 4k", "overcast moody landscape 4k"], ["overcast cinematic forest 4k", "gloomy aesthetic landscape 4k"]),
-    45: ("Foggy Mist", "󰖑", "󰖑", ["foggy dark forest 4k", "misty night street 4k"], ["foggy pine forest 4k", "misty mountain sunrise 4k"]),
-    48: ("Rime Fog", "󰖑", "󰖑", ["frosty fog winter 4k"], ["rime frost morning 4k"]),
-    51: ("Light Drizzle", "󰖗", "󰖗", ["rain on window neon lights 4k", "moody rain city 4k"], ["drizzle wet forest 4k", "rain drops on leaves 4k"]),
-    53: ("Moderate Drizzle", "󰖗", "󰖗", ["rain street reflection 4k", "cyberpunk rain 4k"], ["rainy city 4k", "misty rain 4k"]),
-    55: ("Dense Drizzle", "󰖗", "󰖗", ["rainy night lights 4k", "neon rain reflections 4k"], ["heavy drizzle scenic 4k"]),
-    61: ("Slight Rain", "󰖖", "󰖖", ["rainy tokyo night 4k", "rain cyber city 4k"], ["rain drops window 4k", "rainy nature 4k"]),
-    63: ("Moderate Rain", "󰖖", "󰖖", ["rain storm city 4k", "rain reflections night 4k"], ["wet green forest 4k", "rainy mountain 4k"]),
-    65: ("Heavy Rain", "󰖖", "󰖖", ["heavy rain storm night 4k", "cinematic rain 4k"], ["heavy rain nature 4k", "stormy sky 4k"]),
-    71: ("Slight Snow", "󰖘", "󰖘", ["snowy winter night 4k", "snow covered town 4k"], ["snow mountain peaks 4k", "winter wonderland 4k"]),
-    73: ("Moderate Snow", "󰖘", "󰖘", ["blizzard night 4k", "snow forest 4k"], ["snowy alpine landscape 4k", "frozen lake 4k"]),
-    75: ("Heavy Snow", "󰖘", "󰖘", ["arctic snow blizzard 4k"], ["deep snow mountains 4k"]),
-    80: ("Rain Showers", "󰖖", "󰖖", ["rain shower night 4k"], ["rain shower scenic landscape 4k"]),
-    81: ("Moderate Showers", "󰖖", "󰖖", ["wet asphalt night 4k"], ["dramatic storm showers 4k"]),
-    82: ("Violent Showers", "󰖖", "󰖖", ["dark tempest rain 4k"], ["storm clouds deluge 4k"]),
-    95: ("Thunderstorm", "󰖓", "󰖓", ["lightning night storm 4k", "electric thunderstorm 4k"], ["thunderstorm lightning landscape 4k"]),
-    96: ("Thunder & Hail", "󰖓", "󰖓", ["severe lightning storm 4k"], ["hail thunderstorm 4k"]),
-    99: ("Heavy Thunderstorm", "󰖓", "󰖓", ["dramatic electric storm 4k"], ["severe lightning night sky 4k"]),
-}
-
-def log(msg):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"[{timestamp}] {msg}"
-    if not QUIET_OUTPUT:
-        print(formatted)
+    standard = Path(active_control.runtime.HOME) / ".config" / "omarchy" / "shell.json"
+    xdg = Path(active_control.runtime.XDG_CONFIG_HOME) / "omarchy" / "shell.json"
+    if standard == xdg or not standard.is_file():
+        return {}
     try:
-        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        with open(LOG_FILE, "a") as f:
-            f.write(formatted + "\n")
-    except Exception:
-        pass
+        data = json.loads(standard.read_text(encoding="utf-8"))
+        layout = data.get("bar", {}).get("layout", {})
+        for section in ("left", "center", "right"):
+            entries = layout.get(section, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id") == config_layer.PLUGIN_ID:
+                    return {
+                        key: entry[key]
+                        for key in config_layer.NATIVE_SETTING_KEYS
+                        if key in entry
+                    }
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+    return {}
 
-def atomic_write_text(path, content, mode=0o644):
-    """Write a generated config without exposing a half-written palette."""
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=directory,
-            prefix=".material-cycler-", delete=False
-        ) as f:
-            temporary = f.name
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        if temporary and os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
 
-def atomic_copy_file(source, destination):
-    with open(source, "rb") as f:
-        data = f.read()
-    directory = os.path.dirname(destination)
-    os.makedirs(directory, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=directory, prefix=".material-cycler-", delete=False) as f:
-            temporary = f.name
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, destination)
-    finally:
-        if temporary and os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+config_layer._shell_explicit_settings = _standard_shell_fallback
 
-def palette_cache_path(image_path):
-    """Return a cache path that invalidates when the image changes."""
-    try:
-        stat = os.stat(image_path)
-        identity = f"{os.path.realpath(image_path)}|{stat.st_size}|{stat.st_mtime_ns}"
-    except OSError:
-        identity = os.path.realpath(image_path)
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    return os.path.join(PALETTE_CACHE_DIR, f"{digest}.json")
+# Detached-daemon identity must remain the public entrypoint even though the
+# feature/control implementations are import-only layers.
+control.FRONT_PATH = PUBLIC_PATH
+control.runtime.WRAPPER_PATH = PUBLIC_PATH
+config_layer.install(control)
+hardware_layer.install(control)
 
-def load_cached_palette(image_path):
-    try:
-        with open(palette_cache_path(image_path), "r", encoding="utf-8") as f:
-            cached = json.load(f)
-        if cached.get("accent") and cached.get("palette"):
-            return cached["accent"], cached["palette"]
-    except (OSError, ValueError, TypeError):
-        pass
-    return None, None
 
-def save_cached_palette(image_path, accent_hex, palette):
-    try:
-        os.makedirs(PALETTE_CACHE_DIR, exist_ok=True)
-        atomic_write_text(
-            palette_cache_path(image_path),
-            json.dumps({"accent": accent_hex, "palette": palette}, sort_keys=True) + "\n",
-            0o600,
-        )
-    except (OSError, TypeError, ValueError) as error:
-        log(f"Palette cache write notice: {error}")
+def _shell_config_paths(active_control):
+    """Return Omarchy's preferred shell config followed by its legacy fallback."""
+    preferred = Path(active_control.runtime.XDG_CONFIG_HOME) / "omarchy" / "shell.json"
+    standard = Path(active_control.runtime.HOME) / ".config" / "omarchy" / "shell.json"
+    return (preferred,) if preferred == standard else (preferred, standard)
 
-def daemon_is_active():
-    """Check the owner-only runtime lock instead of requiring systemd."""
-    try:
-        os.makedirs(os.path.dirname(DAEMON_LOCK_FILE), exist_ok=True)
-        with open(DAEMON_LOCK_FILE, "a+") as lock_handle:
-            try:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+
+def _entry_plugin_id(entry):
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        value = entry.get("id")
+        return str(value) if value is not None else ""
+    return ""
+
+
+def _plugin_enabled_from_shell(active_control):
+    """Return True/False from a readable shell.json, or None when unavailable.
+
+    Omarchy enables a third-party plugin exactly while its id is referenced by
+    the active bar, a bar-layout entry, or plugins[]. A missing/unreadable
+    config is treated as unknown rather than disabled so shell startup or a
+    transient atomic rewrite cannot kill a healthy Aura daemon.
+    """
+    plugin_id = str(config_layer.PLUGIN_ID)
+    for path in _shell_config_paths(active_control):
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        bar = data.get("bar")
+        if isinstance(bar, dict):
+            if str(bar.get("id") or "") == plugin_id:
                 return True
-            finally:
-                try:
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
-    except OSError:
+            layout = bar.get("layout")
+            if isinstance(layout, dict):
+                for section in ("left", "center", "right"):
+                    entries = layout.get(section, [])
+                    if not isinstance(entries, list):
+                        continue
+                    if any(_entry_plugin_id(entry) == plugin_id for entry in entries):
+                        return True
+
+        plugins = data.get("plugins", [])
+        if isinstance(plugins, list):
+            if any(_entry_plugin_id(entry) == plugin_id for entry in plugins):
+                return True
+
+        # The first successfully parsed canonical config is authoritative.
         return False
-    return False
-
-def daemon_process_matches(pid):
-    """Only allow stop to signal a process launched from this plugin."""
-    try:
-        with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
-            argv = [part.decode("utf-8", errors="replace") for part in f.read().split(b"\0") if part]
-        expected_script = os.path.realpath(__file__)
-        absolute_args = [os.path.realpath(arg) for arg in argv if arg.startswith("/")]
-        return expected_script in absolute_args and "run" in argv[1:]
-    except (OSError, ValueError, TypeError):
-        return False
-
-def systemd_unit_available():
-    try:
-        return subprocess.run(
-            ["systemctl", "--user", "cat", "material-cycler.service"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
-        ).returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
-
-def systemd_is_active():
-    if not systemd_unit_available():
-        return False
-    try:
-        return subprocess.run(
-            ["systemctl", "--user", "is-active", "--quiet", "material-cycler.service"],
-            timeout=2
-        ).returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
-
-GPU_GUARD_DEFAULTS = {
-    "auto_protect": False,
-    "warn_vram_percent": 75,
-    "critical_vram_percent": 90,
-    "warn_temperature": 80,
-    "critical_temperature": 88,
-    "aura_paused": False,
-    "last_action": ""
-}
-
-@contextmanager
-def gpu_guard_lock():
-    """Serialize guard decisions so overlapping bar polls cannot race."""
-    try:
-        os.makedirs(os.path.dirname(GPU_GUARD_LOCK_FILE), exist_ok=True)
-        with open(GPU_GUARD_LOCK_FILE, "a+") as lock_handle:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        # Telemetry remains useful even when the runtime directory is unusual.
-        yield
-
-def load_gpu_guard_config(cfg=None):
-    state = dict(GPU_GUARD_DEFAULTS)
-    source = cfg if cfg is not None else load_config()
-    saved = source.get("gpu_guard", {})
-    if isinstance(saved, dict):
-        state.update(saved)
-    for key, minimum, maximum in (
-        ("warn_vram_percent", 50, 95),
-        ("critical_vram_percent", 70, 99),
-        ("warn_temperature", 60, 95),
-        ("critical_temperature", 70, 105),
-    ):
-        try:
-            state[key] = max(minimum, min(maximum, int(state[key])))
-        except (KeyError, TypeError, ValueError):
-            state[key] = GPU_GUARD_DEFAULTS[key]
-    state["auto_protect"] = bool(state.get("auto_protect", False))
-    state["aura_paused"] = bool(state.get("aura_paused", False))
-    return state
-
-def save_gpu_guard_config(state, cfg=None):
-    target = cfg if cfg is not None else load_config()
-    target["gpu_guard"] = dict(state)
-    save_config(target)
-
-def parse_gpu_guard_row(line):
-    fields = next(csv.reader([line], skipinitialspace=True), [])
-    if len(fields) < 7:
-        return None
-    try:
-        used = int(float(fields[1]))
-        total = int(float(fields[2]))
-        utilization = int(float(fields[3]))
-        temperature = int(float(fields[4]))
-        power_draw = float(fields[5])
-        power_limit = float(fields[6])
-    except (TypeError, ValueError):
-        return None
-    if total <= 0:
-        return None
-    return {
-        "name": fields[0].strip(),
-        "used_mib": max(0, used),
-        "total_mib": total,
-        "vram_percent": round((used / total) * 100, 1),
-        "utilization_percent": max(0, utilization),
-        "temperature_c": temperature,
-        "power_draw_w": round(power_draw, 1),
-        "power_limit_w": round(power_limit, 1)
-    }
-
-def parse_gpu_guard_processes(text):
-    processes = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        fields = next(csv.reader([line], skipinitialspace=True), [])
-        if len(fields) < 3:
-            continue
-        try:
-            pid = int(fields[0])
-            used = int(float(fields[2]))
-        except (TypeError, ValueError):
-            continue
-        processes.append({"pid": pid, "name": fields[1].strip(), "used_mib": max(0, used)})
-    return sorted(processes, key=lambda item: item["used_mib"], reverse=True)[:8]
-
-_LAST_GPU_METRICS = None
-_LAST_GPU_METRICS_TIME = 0
-
-def collect_gpu_guard_metrics(max_age=5.0):
-    global _LAST_GPU_METRICS, _LAST_GPU_METRICS_TIME
-    now = time.time()
-    if _LAST_GPU_METRICS is not None and (now - _LAST_GPU_METRICS_TIME) < max_age:
-        return _LAST_GPU_METRICS
-
-    binary = shutil.which("nvidia-smi")
-    if not binary:
-        _LAST_GPU_METRICS = ({"available": False, "error": "nvidia-smi is not installed"}, [])
-        _LAST_GPU_METRICS_TIME = now
-        return _LAST_GPU_METRICS
-    query = [
-        binary,
-        "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit",
-        "--format=csv,noheader,nounits"
-    ]
-    try:
-        result = subprocess.run(
-            query, check=False, capture_output=True, text=True, timeout=3,
-            env={**os.environ, "LC_ALL": "C"}
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
-        _LAST_GPU_METRICS = ({"available": False, "error": str(error)}, [])
-        _LAST_GPU_METRICS_TIME = now
-        return _LAST_GPU_METRICS
-    if result.returncode != 0:
-        _LAST_GPU_METRICS = ({"available": False, "error": (result.stderr.strip() or "nvidia-smi could not read the GPU")[-240:]}, [])
-        _LAST_GPU_METRICS_TIME = now
-        return _LAST_GPU_METRICS
-    gpu = None
-    for line in result.stdout.splitlines():
-        gpu = parse_gpu_guard_row(line)
-        if gpu:
-            break
-    if not gpu:
-        _LAST_GPU_METRICS = ({"available": False, "error": "nvidia-smi returned no usable GPU metrics"}, [])
-        _LAST_GPU_METRICS_TIME = now
-        return _LAST_GPU_METRICS
-    processes = []
-    try:
-        process_result = subprocess.run(
-            [binary, "--query-compute-apps=pid,name,used_memory", "--format=csv,noheader,nounits"],
-            check=False, capture_output=True, text=True, timeout=3,
-            env={**os.environ, "LC_ALL": "C"}
-        )
-        if process_result.returncode == 0:
-            processes = parse_gpu_guard_processes(process_result.stdout)
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        pass
-    _LAST_GPU_METRICS = ({"available": True, **gpu}, processes)
-    _LAST_GPU_METRICS_TIME = now
-    return _LAST_GPU_METRICS
-
-def gpu_guard_level(metrics, state):
-    if not metrics.get("available"):
-        return "unavailable"
-    if metrics["vram_percent"] >= state["critical_vram_percent"] or metrics["temperature_c"] >= state["critical_temperature"]:
-        return "critical"
-    if metrics["vram_percent"] >= state["warn_vram_percent"] or metrics["temperature_c"] >= state["warn_temperature"]:
-        return "warning"
-    return "nominal"
-
-def gpu_guard_stop_service():
-    if not systemd_is_active():
-        return False
-    try:
-        return subprocess.run(
-            ["systemctl", "--user", "stop", "material-cycler.service"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
-        ).returncode == 0
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return False
-
-def gpu_guard_start_service():
-    if not systemd_unit_available():
-        return False
-    try:
-        return subprocess.run(
-            ["systemctl", "--user", "start", "material-cycler.service"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
-        ).returncode == 0
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return False
-
-def apply_gpu_guard_protection(metrics, state):
-    level = gpu_guard_level(metrics, state)
-    if not state.get("auto_protect") or not metrics.get("available"):
-        return ""
-    if level == "critical" and not state.get("aura_paused"):
-        if not systemd_is_active():
-            state["last_action"] = "Aura service was already inactive; no service action taken"
-            return state["last_action"]
-        if gpu_guard_stop_service():
-            state["aura_paused"] = True
-            state["last_action"] = "Paused material-cycler.service at critical GPU pressure"
-            return state["last_action"]
-        state["last_action"] = "Could not pause material-cycler.service"
-        return state["last_action"]
-    if level == "nominal" and state.get("aura_paused"):
-        if gpu_guard_start_service():
-            state["aura_paused"] = False
-            state["last_action"] = "Resumed material-cycler.service after GPU pressure cleared"
-            return state["last_action"]
-        state["last_action"] = "Could not resume material-cycler.service"
-        return state["last_action"]
-    return ""
-
-def gpu_guard_status(apply_protection=False):
-    cfg = load_config()
-    state = load_gpu_guard_config(cfg)
-    metrics, processes = collect_gpu_guard_metrics()
-    action = apply_gpu_guard_protection(metrics, state) if apply_protection else ""
-    if action:
-        save_gpu_guard_config(state, cfg)
-    return {
-        "level": gpu_guard_level(metrics, state),
-        "auto_protect": state["auto_protect"],
-        "aura_paused": state["aura_paused"],
-        "last_action": action or state.get("last_action", ""),
-        "thresholds": {
-            "warn_vram_percent": state["warn_vram_percent"],
-            "critical_vram_percent": state["critical_vram_percent"],
-            "warn_temperature": state["warn_temperature"],
-            "critical_temperature": state["critical_temperature"]
-        },
-        "metrics": metrics,
-        "processes": processes
-    }
-
-def gpu_guard_cmd(args):
-    if not args or args[0] in ("status", "status-json"):
-        global QUIET_OUTPUT
-        QUIET_OUTPUT = True
-        with gpu_guard_lock():
-            print(json.dumps(gpu_guard_status(apply_protection=True)))
-        QUIET_OUTPUT = False
-        return
-    if args[0] in ("toggle-protect", "protect"):
-        cfg = load_config()
-        state = load_gpu_guard_config(cfg)
-        state["auto_protect"] = not state["auto_protect"]
-        save_gpu_guard_config(state, cfg)
-        print(f"Aura GPU auto-protect: {'Enabled' if state['auto_protect'] else 'Disabled'}")
-        return
-    print("Usage: aura-cycler gpu-guard {status|toggle-protect}")
-
-def load_config():
-    cfg = dict(DEFAULT_CONFIG)
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-                cfg.update(saved)
-        except Exception as e:
-            log(f"Error reading config: {e}")
-    # Sync with legacy files if they exist
-    if os.path.exists(INTERVAL_FILE):
-        try:
-            with open(INTERVAL_FILE, "r") as f:
-                val = int(f.read().strip())
-                if val >= 5:
-                    cfg["interval"] = val
-        except Exception:
-            pass
-    if os.path.exists(BLUR_FILE):
-        try:
-            with open(BLUR_FILE, "r") as f:
-                val = int(f.read().strip())
-                cfg["blur"] = val
-        except Exception:
-            pass
-    return cfg
-
-def save_config(cfg):
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        atomic_write_text(CONFIG_FILE, json.dumps(cfg, indent=2))
-        if "interval" in cfg:
-            with open(INTERVAL_FILE, "w") as f:
-                f.write(str(cfg["interval"]))
-        if "blur" in cfg:
-            with open(BLUR_FILE, "w") as f:
-                f.write(str(cfg["blur"]))
-    except Exception as e:
-        log(f"Error saving config: {e}")
-
-def read_capped_json(resp, max_bytes=MAX_JSON_BYTES):
-    """
-    Reads and decodes JSON from an HTTP response, enforcing a strict size cap.
-    Rejects Content-Length > max_bytes upfront, and reads at most max_bytes + 1
-    to abort before parsing if the payload exceeds the limit.
-    """
-    headers = getattr(resp, "headers", None)
-    if headers is not None and hasattr(headers, "get"):
-        cl_header = headers.get("Content-Length")
-        if cl_header is not None:
-            try:
-                cl = int(str(cl_header).strip())
-                if cl > max_bytes:
-                    raise ValueError(f"Content-Length {cl} exceeds maximum allowed size of {max_bytes} bytes")
-            except (ValueError, TypeError) as e:
-                if "exceeds maximum allowed size" in str(e):
-                    raise
-    payload = resp.read(max_bytes + 1)
-    if len(payload) > max_bytes:
-        raise ValueError(f"Response payload exceeds maximum allowed size of {max_bytes} bytes")
-    return json.loads(payload.decode("utf-8"))
-
-def get_location():
-    cfg = load_config()
-    loc = cfg.get("location_cache")
-    now = time.time()
-    if loc and (now - loc.get("timestamp", 0) < 21600):  # 6 hours
-        return loc
-
-    try:
-        req = urllib.request.Request("http://ip-api.com/json", headers={"User-Agent": "AuraCycler/1.1"})
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
-            data = read_capped_json(resp)
-            if data.get("status") == "success":
-                loc = {
-                    "lat": float(data.get("lat", 0.0)),
-                    "lon": float(data.get("lon", 0.0)),
-                    "city": str(data.get("city", "Local")),
-                    "country": str(data.get("country", "")),
-                    "timestamp": now
-                }
-                cfg["location_cache"] = loc
-                save_config(cfg)
-                return loc
-    except Exception as e:
-        log(f"Location lookup notice: {e}")
-
-    return {"lat": 0.0, "lon": 0.0, "city": "Local", "country": "", "timestamp": now}
-
-def get_weather(force=False):
-    cfg = load_config()
-    cached = cfg.get("weather_cache")
-    now = time.time()
-    if not force and cached and (now - cached.get("timestamp", 0) < 600):  # 10 mins
-        return cached
-
-    loc = get_location()
-    lat = loc.get("lat", 0.0)
-    lon = loc.get("lon", 0.0)
-    city = loc.get("city", "Local")
-
-    try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
-        req = urllib.request.Request(url, headers={"User-Agent": "AuraCycler/1.1"})
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            data = read_capped_json(resp)
-            current = data.get("current", {})
-            code = int(current.get("weather_code", 0))
-            temp = float(current.get("temperature_2m", 22.0))
-            is_day = bool(current.get("is_day", 1))
-
-            meta = WMO_WEATHER_MAP.get(code)
-            if meta:
-                condition_label, day_icon, night_icon, night_topics, day_topics = meta
-                icon = day_icon if is_day else night_icon
-                topics = day_topics if is_day else night_topics
-            else:
-                condition_label = "Partly Cloudy"
-                icon = "󰖕" if is_day else "󰖖"
-                topics = ["landscape 4k", "nature 4k"]
-
-            result = {
-                "temp": round(temp),
-                "condition": condition_label,
-                "icon": icon,
-                "code": code,
-                "city": city,
-                "is_day": is_day,
-                "topics": topics,
-                "timestamp": now
-            }
-            cfg["weather_cache"] = result
-            save_config(cfg)
-            return result
-    except Exception as e:
-        log(f"Weather lookup notice: {e}")
-        if cached:
-            return cached
-        return {
-            "temp": 23,
-            "condition": "Pleasant",
-            "icon": "󰖐",
-            "code": 0,
-            "city": city,
-            "is_day": True,
-            "topics": ["landscape 4k", "nature 4k"],
-            "timestamp": now
-        }
-
-def get_wallhaven_key():
-    env_key = os.environ.get("WALLHAVEN_API_KEY", "").strip()
-    if env_key:
-        return env_key
-    if os.path.exists(WALLHAVEN_KEY_FILE):
-        try:
-            k = open(WALLHAVEN_KEY_FILE).read().strip()
-            if k:
-                return k
-        except Exception:
-            pass
-    return ""
-
-def valid_wallpaper(path, minimum=(2560, 1440)):
-    """Reject invalid or compositor-unsafe images before publication."""
-    try:
-        from PIL import Image
-        with Image.open(path) as image:
-            width, height = image.size
-            landscape = width >= minimum[0] and height >= minimum[1]
-            portrait = width >= minimum[1] and height >= minimum[0]
-            if not (landscape or portrait):
-                return False
-            if width * height > MAX_WALLPAPER_PIXELS:
-                return False
-            image.verify()
-        return True
-    except Exception:
-        return False
-
-def safe_cache_path(prefix, identifier, extension=".jpg"):
-    """
-    Derive a sanitized cache file path strictly contained within CACHE_DIR.
-    Uses a strict identifier allowlist; if invalid or path components are present,
-    falls back to a safe SHA256 hex digest of the raw identifier.
-    Guarantees the resolved destination remains under CACHE_DIR.
-    """
-    norm_ext = extension.lower() if extension else ".jpg"
-    if norm_ext not in IMAGE_EXTENSIONS:
-        norm_ext = ".jpg"
-
-    clean_prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(prefix))
-    raw_id = str(identifier) if identifier is not None else ""
-    if SAFE_ID_RE.fullmatch(raw_id):
-        safe_id = raw_id
-    else:
-        safe_id = hashlib.sha256(raw_id.encode("utf-8", errors="replace")).hexdigest()[:32]
-
-    filename = f"{clean_prefix}_{safe_id}{norm_ext}" if clean_prefix else f"{safe_id}{norm_ext}"
-
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_real = os.path.realpath(os.path.abspath(CACHE_DIR))
-    dest_path = os.path.abspath(os.path.join(CACHE_DIR, filename))
-    dest_real = os.path.realpath(dest_path)
-
-    try:
-        if os.path.commonpath([cache_real, dest_real]) != cache_real:
-            raise ValueError(f"Path traversal detected: {dest_path} escapes {CACHE_DIR}")
-    except ValueError:
-        raise ValueError(f"Path traversal detected: {dest_path} escapes {CACHE_DIR}")
-
-    return dest_path
-
-def download_wallpaper(url, destination, minimum=(2560, 1440)):
-    """Download to a same-directory temporary file, stream with byte limits, validate, then publish atomically."""
-    parsed_url = urllib.parse.urlparse(str(url or ""))
-    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        log(f"Blocked non-HTTP wallpaper URL: {url}")
-        return False
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_real = os.path.realpath(os.path.abspath(CACHE_DIR))
-    dest_real = os.path.realpath(os.path.abspath(destination))
-    try:
-        if os.path.commonpath([cache_real, dest_real]) != cache_real:
-            log(f"Blocked download to destination outside cache directory: {destination}")
-            return False
-    except ValueError:
-        log(f"Blocked download to invalid destination: {destination}")
-        return False
-
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=os.path.dirname(destination),
-            prefix=".material-download-",
-            delete=False
-        ) as f:
-            temporary = f.name
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                headers = getattr(resp, "headers", None)
-                if headers is not None and hasattr(headers, "get"):
-                    cl_header = headers.get("Content-Length")
-                    if cl_header is not None:
-                        try:
-                            cl = int(str(cl_header).strip())
-                            if cl > MAX_WALLPAPER_BYTES or cl < 0:
-                                log(f"Rejected download {url}: Content-Length {cl} exceeds {MAX_WALLPAPER_BYTES} bytes")
-                                return False
-                        except (ValueError, TypeError):
-                            pass
-
-                total_bytes = 0
-                chunk_size = 64 * 1024
-                while True:
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
-                        break
-                    total_bytes += len(chunk)
-                    if total_bytes > MAX_WALLPAPER_BYTES:
-                        log(f"Aborted download {url}: exceeded maximum size of {MAX_WALLPAPER_BYTES} bytes ({total_bytes} bytes read)")
-                        return False
-                    f.write(chunk)
-
-            f.flush()
-            os.fsync(f.fileno())
-
-        if not valid_wallpaper(temporary, minimum=minimum):
-            log(f"Rejected downloaded image (failed validation/safety limits): {os.path.basename(destination)}")
-            return False
-
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, destination)
-        return True
-    except Exception as error:
-        log(f"Atomic wallpaper download failed for {os.path.basename(destination)}: {error}")
-        return False
-    finally:
-        if temporary and os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-
-def get_interval():
-    cfg = load_config()
-    return max(5, int(cfg.get("interval", 300)))
-
-def set_interval(val):
-    cfg = load_config()
-    cfg["interval"] = max(5, int(val))
-    save_config(cfg)
-    log(f"Interval set to {val}s")
-
-def find_keyboard_backlight_device():
-    """
-    Locates hardware keyboard backlight sysfs path across laptop manufacturers:
-    - Apple Silicon (MacBook on Asahi Linux): kbd_backlight
-    - Apple Intel (MacBook on Linux): smc::kbd_backlight, apple::kbd_backlight
-    - Lenovo (ThinkPad): tpacpi::kbd_backlight
-    - Dell: dell::kbd_backlight
-    - Framework / Chromebook: chromeos::kbd_backlight, framework::kbd_backlight
-    - System76: system76::kbd_backlight, system76_acpi::kbd_backlight
-    - ASUS: asus::kbd_backlight
-    - Generic: any /sys/class/leds/*kbd* or *keyboard* device
-    """
-    leds_base = "/sys/class/leds"
-    if not os.path.exists(leds_base):
-        return None
-
-    priority_names = [
-        "kbd_backlight",
-        "smc::kbd_backlight",
-        "apple::kbd_backlight",
-        "asus::kbd_backlight",
-        "tpacpi::kbd_backlight",
-        "dell::kbd_backlight",
-        "system76::kbd_backlight",
-        "system76_acpi::kbd_backlight",
-        "chromeos::kbd_backlight",
-    ]
-    for name in priority_names:
-        p = os.path.join(leds_base, name)
-        if os.path.exists(p):
-            return p
-
-    try:
-        for entry in sorted(os.listdir(leds_base)):
-            lower = entry.lower()
-            if ("kbd" in lower or "keyboard" in lower) and "scrolllock" not in lower and "capslock" not in lower and "numlock" not in lower:
-                return os.path.join(leds_base, entry)
-    except OSError:
-        pass
     return None
 
-def get_keyboard_brightness():
-    # 1. Try asusctl if available
-    try:
-        res = subprocess.run(["asusctl", "leds", "get"], capture_output=True, text=True, timeout=2)
-        m = re.search(r"brightness:\s*(\w+)", res.stdout, re.IGNORECASE)
-        if m:
-            return m.group(1).lower()
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        pass
 
-    # 2. Try sysfs device (Apple, ThinkPad, Dell, Framework, System76, generic)
-    dev = find_keyboard_backlight_device()
-    if dev:
-        try:
-            with open(os.path.join(dev, "brightness"), "r") as f:
-                cur = int(f.read().strip())
-            with open(os.path.join(dev, "max_brightness"), "r") as f:
-                max_b = int(f.read().strip())
-            if cur == 0:
-                return "off"
-            if max_b > 0:
-                ratio = cur / max_b
-                if ratio <= 0.35:
-                    return "low"
-                elif ratio <= 0.70:
-                    return "med"
-                else:
-                    return "high"
-        except (OSError, ValueError):
-            pass
+def _install_omarchy_lifecycle_guard(active_control):
+    """Make the daemon exit cleanly after Omarchy disables/removes Aura.
 
-    # 3. Try brightnessctl
-    try:
-        res_cur = subprocess.run(["brightnessctl", "--device=*kbd*", "get"], capture_output=True, text=True, timeout=2)
-        res_max = subprocess.run(["brightnessctl", "--device=*kbd*", "max"], capture_output=True, text=True, timeout=2)
-        if res_cur.returncode == 0 and res_max.returncode == 0:
-            cur = int(res_cur.stdout.strip())
-            max_b = int(res_max.stdout.strip())
-            if cur == 0:
-                return "off"
-            if max_b > 0:
-                ratio = cur / max_b
-                if ratio <= 0.35:
-                    return "low"
-                elif ratio <= 0.70:
-                    return "med"
-                else:
-                    return "high"
-    except (FileNotFoundError, OSError, ValueError, subprocess.TimeoutExpired):
-        pass
+    The preserved runtime already sleeps in short keyboard-sync slices. Wrap
+    that sleep instead of adding another process or polling subprocess. A clean
+    SystemExit(0) also cooperates with the optional systemd unit's
+    Restart=on-failure policy: disable stays stopped, while genuine crashes may
+    still be restarted.
+    """
+    core = active_control.core
+    original_sleep = core.sleep_with_keyboard_sync
 
-    return None
-
-def set_keyboard_brightness(level):
-    level = str(level).strip().lower()
-
-    # 1. Try asusctl if available
-    try:
-        res = subprocess.run(["asusctl", "leds", "set", level], capture_output=True, text=True, timeout=3)
-        if res.returncode == 0:
-            return True
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        pass
-
-    # 2. Try brightnessctl
-    try:
-        val = "0" if level == "off" else ("33%" if level == "low" else ("66%" if level == "med" else "100%"))
-        res = subprocess.run(["brightnessctl", "--device=*kbd*", "set", val], capture_output=True, text=True, timeout=3)
-        if res.returncode == 0:
-            return True
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        pass
-
-    # 3. Try direct sysfs write
-    dev = find_keyboard_backlight_device()
-    if dev:
-        try:
-            with open(os.path.join(dev, "max_brightness"), "r") as f:
-                max_b = int(f.read().strip())
-            target = 0 if level == "off" else (max(1, max_b // 3) if level == "low" else (max(1, (2 * max_b) // 3) if level == "med" else max_b))
-            with open(os.path.join(dev, "brightness"), "w") as f:
-                f.write(str(target))
-            return True
-        except (OSError, PermissionError):
-            pass
-
-    return False
-
-def set_keyboard_color(hex_code):
-    global last_keyboard_level, last_keyboard_color
-    clean_hex = str(hex_code).lstrip("#").upper()
-    if not re.fullmatch(r"[0-9A-F]{6}", clean_hex):
-        log(f"Skipped invalid keyboard color: {hex_code}")
-        return False
-
-    try:
-        level = get_keyboard_brightness()
-        if level == "off":
-            last_keyboard_level = "off"
-            last_keyboard_color = clean_hex
-            log("Keyboard backlight is OFF; preserving manual Off state and skipping backlight color write.")
+    def lifecycle_allows_run():
+        if not PUBLIC_PATH.is_file():
+            core.log("Aura plugin checkout disappeared; daemon exiting cleanly.")
             return False
-        if level is None:
+        enabled = _plugin_enabled_from_shell(active_control)
+        if enabled is False:
+            core.log("Aura plugin disabled in Omarchy; daemon exiting cleanly.")
             return False
-
-        if level == last_keyboard_level and clean_hex == str(last_keyboard_color or "").upper():
-            return True
-
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(KEYBOARD_LOCK_FILE, "a+") as lock_handle:
-            try:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                log("Keyboard sync locked by another write; skipping.")
-                return False
-            try:
-                synced = False
-
-                # 1. Try asusctl for RGB if available
-                try:
-                    res = subprocess.run(
-                        ["asusctl", "aura", "effect", "static", "--colour", clean_hex],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    if res.returncode == 0:
-                        synced = True
-                        log(f"Keyboard RGB static color successfully synced to #{clean_hex} at brightness '{level}'.")
-                except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-                    pass
-
-                # 2. Try OpenRGB if available
-                if not synced:
-                    try:
-                        res = subprocess.run(
-                            ["openrgb", "--color", clean_hex, "--mode", "static"],
-                            capture_output=True, text=True, timeout=3
-                        )
-                        if res.returncode == 0:
-                            synced = True
-                            log(f"OpenRGB keyboard color successfully synced to #{clean_hex}.")
-                    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-                        pass
-
-                # 3. If hardware has single-color/monochrome backlight (Apple MacBooks, ThinkPads, Dells, Framework)
-                if not synced:
-                    log(f"Keyboard backlight active at level '{level}' (monochrome LED hardware; color #{clean_hex} applied to desktop theme).")
-                    synced = True
-
-                last_keyboard_level = level
-                last_keyboard_color = clean_hex
-                return synced
-            finally:
-                try:
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
-    except Exception as e:
-        log(f"Keyboard backlight sync notice: {e}")
-        return False
-
-def get_blur():
-    cfg = load_config()
-    return int(cfg.get("blur", 12))
-
-def set_blur(size):
-    size = max(0, min(24, int(size)))
-    cfg = load_config()
-    cfg["blur"] = size
-    save_config(cfg)
-    try:
-        subprocess.run(["omarchy-shell", "shell", "setBlur", str(size)], 
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-    except Exception:
-        pass
-    log(f"Glass blur set to {size}px")
-
-def adjust_blur(delta):
-    set_blur(get_blur() + delta)
-
-def toggle_blur():
-    cur = get_blur()
-    set_blur(0 if cur > 0 else 12)
-
-_WALLPAPERS_CACHE = None
-_WALLPAPERS_CACHE_TIME = 0
-
-def invalidate_wallpapers_cache():
-    global _WALLPAPERS_CACHE, _WALLPAPERS_CACHE_TIME
-    _WALLPAPERS_CACHE = None
-    _WALLPAPERS_CACHE_TIME = 0
-
-def collect_local_wallpapers(validate=False, max_age=30.0):
-    global _WALLPAPERS_CACHE, _WALLPAPERS_CACHE_TIME
-    now = time.time()
-    if not validate and _WALLPAPERS_CACHE is not None and (now - _WALLPAPERS_CACHE_TIME) < max_age:
-        return list(_WALLPAPERS_CACHE)
-
-    cfg = load_config()
-    folders = cfg.get("custom_folders", [])
-    paths = []
-    seen = set()
-
-    for folder in folders:
-        expanded = os.path.expanduser(folder)
-        if not os.path.exists(expanded):
-            continue
-        for root, _, files in os.walk(expanded):
-            for f in sorted(files):
-                if f.lower().endswith(IMAGE_EXTENSIONS):
-                    candidate = os.path.join(root, f)
-                    if candidate not in seen:
-                        if not validate or valid_wallpaper(candidate):
-                            paths.append(candidate)
-                            seen.add(candidate)
-
-    # Fallback to CACHE_DIR if no user images exist
-    if not paths and os.path.exists(CACHE_DIR):
-        for f in sorted(os.listdir(CACHE_DIR)):
-            if f.lower().endswith(IMAGE_EXTENSIONS):
-                candidate = os.path.join(CACHE_DIR, f)
-                if candidate not in seen:
-                    if not validate or valid_wallpaper(candidate):
-                        paths.append(candidate)
-                        seen.add(candidate)
-
-    # Fallback to system themes directory
-    if not paths:
-        themes_dir = os.path.expanduser("~/.config/omarchy/themes")
-        if os.path.exists(themes_dir):
-            for root, _, files in os.walk(themes_dir):
-                for f in sorted(files):
-                    if f.lower().endswith(IMAGE_EXTENSIONS):
-                        candidate = os.path.join(root, f)
-                        if candidate not in seen:
-                            if not validate or valid_wallpaper(candidate):
-                                paths.append(candidate)
-                                seen.add(candidate)
-
-    if not validate:
-        _WALLPAPERS_CACHE = list(paths)
-        _WALLPAPERS_CACHE_TIME = now
-
-    return paths
-
-def fetch_single_random_4k():
-    """
-    Fetches an authentic 4K/UHD (>=3840x2160) wallpaper.
-    Adapts to outdoor live weather when weather_sync is enabled.
-    """
-    cfg = load_config()
-    weather_sync = cfg.get("weather_sync", True)
-    
-    if weather_sync:
-        try:
-            weather = get_weather()
-            topics = weather.get("topics", [])
-            chosen_topic = random.choice(topics) if topics else random.choice(AESTHETIC_TOPICS)
-            log(f"Weather sync ({weather.get('condition')}, {weather.get('temp')}°C): searching 4K '{chosen_topic}'")
-        except Exception:
-            chosen_topic = random.choice(AESTHETIC_TOPICS)
-    else:
-        chosen_topic = random.choice(AESTHETIC_TOPICS)
-    
-    # 1. Try Wallhaven 4K
-    try:
-        key = get_wallhaven_key()
-        wh_url = f"https://wallhaven.cc/api/v1/search?q={urllib.parse.quote(chosen_topic)}&atleast=3840x2160&ratios=16x9,16x10&purity=100&sorting=random"
-        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0"}
-        if key:
-            headers["X-API-Key"] = key
-        req = urllib.request.Request(wh_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=7) as resp:
-            data = read_capped_json(resp)
-            items = data.get("data", [])
-            if items:
-                item = random.choice(items[:6])
-                photo_id = item.get("id")
-                img_url = item.get("path")
-                ext = ".png" if str(img_url or "").lower().endswith(".png") else ".jpg"
-                dest = safe_cache_path("wallhaven", photo_id, ext)
-                if not valid_wallpaper(dest):
-                    download_wallpaper(img_url, dest)
-                if valid_wallpaper(dest):
-                    from PIL import Image
-                    with Image.open(dest) as im:
-                        log(f"Streamed 4K Wallhaven wallpaper: {os.path.basename(dest)} ({im.size[0]}x{im.size[1]}, {chosen_topic})")
-                    return dest
-    except Exception as e:
-        log(f"Wallhaven 4K stream notice ({chosen_topic}): {e}")
-
-    # 2. Fallback: Bing 4K UHD
-    try:
-        idx = random.randint(0, 7)
-        bing_url = f"https://www.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n=1&mkt=en-US&uhd=1&uhdwidth=3840&uhdheight=2160"
-        req = urllib.request.Request(bing_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = read_capped_json(resp)
-            images = data.get("images", [])
-            if images:
-                img = images[0]
-                hsh = img.get("hsh", str(idx))
-                dest = safe_cache_path("bing", hsh, ".jpg")
-                if os.path.exists(dest) and valid_wallpaper(dest):
-                    return dest
-                img_url = "https://www.bing.com" + img["urlbase"] + "_UHD.jpg"
-                if download_wallpaper(img_url, dest) and valid_wallpaper(dest):
-                    log(f"Streamed Bing 4K UHD wallpaper: {os.path.basename(dest)}")
-                    return dest
-    except Exception as e:
-        log(f"Bing 4K stream notice: {e}")
-
-    return None
-
-def fetch_4k_wallpapers(count=4):
-    """Fetches a batch of 4K wallpapers into local cache."""
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    downloaded = 0
-    cfg = load_config()
-    weather_sync = cfg.get("weather_sync", True)
-    
-    topics = list(AESTHETIC_TOPICS)
-    if weather_sync:
-        try:
-            weather = get_weather()
-            w_topics = weather.get("topics", [])
-            if w_topics:
-                topics = w_topics + topics
-        except Exception:
-            pass
-
-    random.shuffle(topics)
-
-    for topic in topics:
-        if downloaded >= count:
-            break
-        try:
-            key = get_wallhaven_key()
-            wh_url = f"https://wallhaven.cc/api/v1/search?q={urllib.parse.quote(topic)}&atleast=3840x2160&ratios=16x9,16x10&purity=100&sorting=random"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            if key:
-                headers["X-API-Key"] = key
-            req = urllib.request.Request(wh_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=7) as resp:
-                data = read_capped_json(resp)
-                items = data.get("data", [])
-                for item in items:
-                    if downloaded >= count:
-                        break
-                    photo_id = item.get("id")
-                    img_url = item.get("path")
-                    ext = ".png" if str(img_url or "").lower().endswith(".png") else ".jpg"
-                    dest = safe_cache_path("wallhaven", photo_id, ext)
-                    if not os.path.exists(dest):
-                        if download_wallpaper(img_url, dest):
-                            log(f"Downloaded 4K wallpaper: {os.path.basename(dest)} ({topic})")
-                            downloaded += 1
-        except Exception:
-            pass
-
-    if downloaded < count:
-        for idx in range(count - downloaded):
-            try:
-                bing_url = f"https://www.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n=1&mkt=en-US&uhd=1&uhdwidth=3840&uhdheight=2160"
-                req = urllib.request.Request(bing_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=6) as resp:
-                    data = read_capped_json(resp)
-                    images = data.get("images", [])
-                    if images:
-                        img = images[0]
-                        hsh = img.get("hsh", str(idx))
-                        dest = safe_cache_path("bing", hsh, ".jpg")
-                        if not os.path.exists(dest):
-                            img_url = "https://www.bing.com" + img["urlbase"] + "_UHD.jpg"
-                            if download_wallpaper(img_url, dest) and valid_wallpaper(dest):
-                                log(f"Downloaded Bing 4K UHD: {os.path.basename(dest)}")
-                                downloaded += 1
-            except Exception:
-                pass
-
-def extract_focal_colors_offline(image_path):
-    """
-    Offline palette extraction:
-    Uses Pillow + NumPy + K-Means clustering + Google Material You Monet HCT.
-    Filters background voids and scores clusters by chromaticity and focal presence.
-    Returns (accent_hex, theme_palette).
-    """
-    cached_accent, cached_palette = load_cached_palette(image_path)
-    if cached_accent and cached_palette:
-        log(f"Palette cache hit: {os.path.basename(image_path)}")
-        return cached_accent, cached_palette
-
-    try:
-        from PIL import Image
-        import numpy as np
-        from sklearn.cluster import KMeans
-        from materialyoucolor.hct import Hct
-        from materialyoucolor.scheme.scheme_vibrant import SchemeVibrant
-        from materialyoucolor.utils.color_utils import hex_from_argb
-        
-        img = Image.open(image_path).convert('RGB')
-        img.thumbnail((200, 200), Image.Resampling.LANCZOS)
-        arr = np.array(img).reshape(-1, 3) / 255.0
-        
-        r, g, b = arr[:, 0], arr[:, 1], arr[:, 2]
-        max_c = np.maximum(np.maximum(r, g), b)
-        min_c = np.minimum(np.minimum(r, g), b)
-        chroma = max_c - min_c
-        lightness = (max_c + min_c) / 2.0
-        
-        mask = (chroma > 0.15) & (lightness > 0.12) & (lightness < 0.92)
-        vibrant_pixels = arr[mask]
-        if len(vibrant_pixels) < 50:
-            mask = (lightness > 0.10) & (lightness < 0.95)
-            vibrant_pixels = arr[mask] if np.any(mask) else arr
-            
-        n_clusters = min(6, len(vibrant_pixels))
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-        kmeans.fit(vibrant_pixels)
-        
-        counts = np.bincount(kmeans.labels_)
-        best_score = -1
-        best_color = kmeans.cluster_centers_[0]
-        
-        for i, center in enumerate(kmeans.cluster_centers_):
-            cr, cg, cb = center
-            c_max = max(cr, cg, cb)
-            c_min = min(cr, cg, cb)
-            c_chroma = c_max - c_min
-            c_light = (c_max + c_min) / 2.0
-            s = c_chroma / (1.0 - abs(2.0 * c_light - 1.0) + 1e-6)
-            
-            score = (counts[i] ** 0.5) * (s ** 1.4) * (c_chroma ** 0.8)
-            if score > best_score:
-                best_score = score
-                best_color = center
-                
-        r_int = int(best_color[0] * 255)
-        g_int = int(best_color[1] * 255)
-        b_int = int(best_color[2] * 255)
-        accent_hex = f"{r_int:02X}{g_int:02X}{b_int:02X}"
-        
-        argb = (0xFF << 24) | (r_int << 16) | (g_int << 8) | b_int
-        hct = Hct.from_int(argb)
-        scheme = SchemeVibrant(hct, False, 0.0)
-        
-        def hx(c_int):
-            return hex_from_argb(c_int)[:7]
-            
-        p = scheme.primary_palette
-        sc = scheme.secondary_palette
-        t = scheme.tertiary_palette
-        n = scheme.neutral_palette
-        nv = scheme.neutral_variant_palette
-        
-        theme_palette = {
-            'accent': f'#{accent_hex}',
-            'selection': hx(p.tone(30)),
-            'muted': hx(nv.tone(55)),
-            'background': hx(n.tone(6)),
-            'dark_background': hx(n.tone(4)),
-            'darker_background': hx(n.tone(2)),
-            'lighter_background': hx(n.tone(14)),
-            'foreground': hx(n.tone(90)),
-            'dark_foreground': hx(n.tone(70)),
-            'light_foreground': hx(n.tone(95)),
-            'bright_foreground': hx(n.tone(98)),
-            'blue': hx(p.tone(80)),
-            'cyan': hx(sc.tone(80)),
-            'green': hx(t.tone(80)),
-            'yellow': hx(sc.tone(90)),
-            'orange': hx(p.tone(75)),
-            'magenta': hx(t.tone(70)),
-            'red': hx(scheme.error_palette.tone(80)),
-            'bright_red': hx(scheme.error_palette.tone(85)),
-            'bright_yellow': hx(sc.tone(95)),
-            'bright_green': hx(t.tone(85)),
-            'bright_blue': hx(p.tone(85)),
-            'bright_magenta': hx(t.tone(75)),
-            'bright_cyan': hx(sc.tone(85)),
-            'brown': hx(p.tone(45)),
-        }
-        save_cached_palette(image_path, accent_hex, theme_palette)
-        return accent_hex, theme_palette
-    except Exception as e:
-        log(f"Offline model extraction error: {e}")
-        return None, None
-
-def write_colors_toml(path, palette):
-    try:
-        content = f"""# Generated by Material You Monet Vision Model for Omarchy
-mode = "dark"
-
-accent = "{palette.get('accent', '#00FF66')}"
-selection = "{palette.get('selection', '#1C251C')}"
-muted = "{palette.get('muted', '#66696F')}"
-
-background = "{palette.get('background', '#0A0E0A')}"
-dark_background = "{palette.get('dark_background', '#060806')}"
-darker_background = "{palette.get('darker_background', '#030403')}"
-lighter_background = "{palette.get('lighter_background', '#182018')}"
-
-foreground = "{palette.get('foreground', '#E2ECE2')}"
-dark_foreground = "{palette.get('dark_foreground', '#A0ACA0')}"
-light_foreground = "{palette.get('light_foreground', '#ECF6EC')}"
-bright_foreground = "{palette.get('bright_foreground', '#F4FBF4')}"
-
-red = "{palette.get('red', '#FFB4A3')}"
-yellow = "{palette.get('yellow', '#E6E880')}"
-orange = "{palette.get('orange', '#FFB787')}"
-green = "{palette.get('green', '#80E89A')}"
-cyan = "{palette.get('cyan', '#7DE7E8')}"
-blue = "{palette.get('blue', '#80C2FF')}"
-magenta = "{palette.get('magenta', '#E880E8')}"
-brown = "{palette.get('brown', '#8A5E4D')}"
-
-bright_red = "{palette.get('bright_red', '#FFDAD4')}"
-bright_yellow = "{palette.get('bright_yellow', '#FFFFC0')}"
-bright_green = "{palette.get('bright_green', '#A0FFBA')}"
-bright_cyan = "{palette.get('bright_cyan', '#A0FFFF')}"
-bright_blue = "{palette.get('bright_blue', '#A6D5FF')}"
-bright_magenta = "{palette.get('bright_magenta', '#FFA6FF')}"
-"""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        atomic_write_text(path, content)
-        return content
-    except Exception as e:
-        log(f"Error writing colors.toml to {path}: {e}")
-        return ""
-
-def regenerate_derived_theme_files(colors_raw):
-    """Regenerate Omarchy's terminal, shell, border, and keyboard configs."""
-    if not colors_raw:
-        return False
-
-    backup_root = None
-    backup_next = None
-    lock = None
-    try:
-        os.makedirs(CURRENT_THEME_DIR, exist_ok=True)
-        os.makedirs(os.path.dirname(THEME_LOCK_FILE), exist_ok=True)
-        lock = open(THEME_LOCK_FILE, "a+")
-        fcntl.flock(lock, fcntl.LOCK_EX)
-
-        if os.path.exists(NEXT_THEME_DIR):
-            backup_root = tempfile.mkdtemp(
-                prefix="omarchy-theme-next-",
-                dir=os.path.dirname(NEXT_THEME_DIR)
-            )
-            backup_next = os.path.join(backup_root, "next-theme")
-            os.replace(NEXT_THEME_DIR, backup_next)
-        os.makedirs(NEXT_THEME_DIR, exist_ok=True)
-        atomic_write_text(os.path.join(NEXT_THEME_DIR, "colors.toml"), colors_raw)
-
-        template_env = os.environ.copy()
-        template_env.setdefault("OMARCHY_PATH", os.path.expanduser("~/omarchy"))
-        result = subprocess.run(
-            ["omarchy-theme-set-templates"],
-            capture_output=True, text=True, timeout=8, env=template_env
-        )
-        if result.returncode != 0:
-            log("Omarchy theme template regeneration failed; keeping the current generated configs.")
-            return False
-
-        for name in THEME_TEMPLATE_FILES:
-            source = os.path.join(NEXT_THEME_DIR, name)
-            if os.path.isfile(source):
-                atomic_copy_file(source, os.path.join(CURRENT_THEME_DIR, name))
         return True
-    except Exception as e:
-        log(f"Omarchy derived theme regeneration error: {e}")
-        return False
-    finally:
-        if backup_next and not os.path.exists(NEXT_THEME_DIR):
-            try:
-                os.replace(backup_next, NEXT_THEME_DIR)
-            except OSError:
-                pass
-        if backup_root:
-            shutil.rmtree(backup_root, ignore_errors=True)
-        if lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-                lock.close()
-            except OSError:
-                pass
 
-def write_palette_state(image_path, accent_hex, palette, generated):
-    state = {
-        "version": 1,
-        "wallpaper": os.path.realpath(image_path),
-        "wallpaper_name": os.path.basename(image_path),
-        "accent": f"#{accent_hex.lower()}",
-        "keyboard": f"#{accent_hex.lower()}",
-        "system_configs_regenerated": bool(generated),
-        "palette": palette or {},
-        "applied_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    try:
-        atomic_write_text(PALETTE_STATE_FILE, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o600)
-    except Exception as e:
-        log(f"Palette state write error: {e}")
-
-def sync_current_keyboard_color():
-    global last_keyboard_level, last_keyboard_color
-    try:
-        with open(PALETTE_STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        color = str(state.get("keyboard", "")).strip()
-        level = get_keyboard_brightness()
-        if not color or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
-            return
-        if level != last_keyboard_level:
-            previous = last_keyboard_level
-            last_keyboard_level = level
-            if level != "off" and level is not None:
-                log(f"Keyboard brightness changed from {previous or 'unknown'} to {level}; applying current RGB {color}.")
-                set_keyboard_color(color)
-        elif level != "off" and color.upper() != str(last_keyboard_color or "").upper():
-            set_keyboard_color(color)
-    except (OSError, ValueError, TypeError):
-        pass
-
-def sleep_with_keyboard_sync(seconds):
-    deadline = time.monotonic() + max(0, seconds)
-    while True:
-        sync_current_keyboard_color()
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return
-        time.sleep(min(5, remaining))
-
-def apply_next_wallpaper():
-    cfg = load_config()
-    chosen = None
-    
-    # 1. Stream fresh 4K wallpaper if stream_online is enabled (40% probability)
-    if cfg.get("stream_online", False) and random.random() < 0.40:
-        chosen = fetch_single_random_4k()
-
-    # 2. Select from local wallpaper pool
-    if not chosen:
-        wallpapers = collect_local_wallpapers(validate=False)
-        if not wallpapers:
-            if cfg.get("stream_online", False):
-                log("No wallpapers found locally, fetching 4K batch...")
-                fetch_4k_wallpapers(4)
-                wallpapers = collect_local_wallpapers(validate=False)
-            else:
-                log("No wallpapers found locally and online streaming is disabled.")
-        if wallpapers:
-            current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
-            current_bg = os.path.realpath(current_bg_link) if os.path.exists(current_bg_link) else ""
-            candidates = [w for w in wallpapers if w != current_bg]
-            pool = list(candidates if candidates else wallpapers)
-            random.shuffle(pool)
-            for candidate in pool[:20]:
-                if valid_wallpaper(candidate):
-                    chosen = candidate
-                    break
-
-    if not chosen:
-        log("No valid wallpaper available to apply.")
-        return
-
-    log(f"=== Applying New Wallpaper: {os.path.basename(chosen)} ===")
-
-    # 3. Apply wallpaper atomically by updating Omarchy background symlink
-    current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
-    try:
-        os.makedirs(os.path.dirname(current_bg_link), exist_ok=True)
-        tmp_link = current_bg_link + ".tmp"
-        if os.path.lexists(tmp_link):
-            os.unlink(tmp_link)
-        os.symlink(chosen, tmp_link)
-        os.replace(tmp_link, current_bg_link)
-    except Exception as e:
-        log(f"Background symlink error: {e}")
-
-    # 4. Extract focal colors and complete Material You palette via offline ML model
-    focal_accent, palette = extract_focal_colors_offline(chosen)
-
-    colors_raw = ""
-    accent_hex = focal_accent or "00FF66"
-    if palette:
-        aether_colors = os.path.expanduser("~/.config/aether/theme/colors.toml")
-        omarchy_colors = os.path.join(CURRENT_THEME_DIR, "colors.toml")
-        colors_raw = write_colors_toml(aether_colors, palette)
-        write_colors_toml(omarchy_colors, palette)
-
-    generated = regenerate_derived_theme_files(colors_raw)
-    write_palette_state(chosen, accent_hex, palette, generated)
-
-    # 5. Apply complete theme and background transition live to Omarchy shell
-    if colors_raw:
-        try:
-            b64 = base64.b64encode(colors_raw.encode()).decode()
-            shell_path = os.path.join(CURRENT_THEME_DIR, "shell.toml")
-            shell_raw = ""
-            if os.path.isfile(shell_path):
-                with open(shell_path, "r", encoding="utf-8") as f:
-                    shell_raw = f.read()
-            shell_b64 = base64.b64encode(shell_raw.encode()).decode()
-            subprocess.run(["omarchy-shell", "-q", "background", "themeTransition", "", chosen, chosen, b64, shell_b64],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            subprocess.run(["omarchy-shell", "-q", "background", "set", chosen],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            subprocess.run(["omarchy-shell", "-q", "shell", "applyTheme", b64, shell_b64],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        except Exception:
-            pass
-    else:
-        try:
-            subprocess.run(["omarchy-shell", "-q", "background", "set", chosen],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        except Exception:
-            pass
-
-    # 6. Re-apply glass blur
-    try:
-        subprocess.run(["omarchy-shell", "shell", "setBlur", str(get_blur())],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-    except Exception:
-        pass
-
-    # 7. Ambient Keyboard Backlight Sync
-    keyboard_hex = accent_hex or "00FF66"
-    log(f"Canonical Accent: #{accent_hex} | Keyboard RGB: #{keyboard_hex}")
-    set_keyboard_color(keyboard_hex)
-
-    # 8. Live app sync: Chrome/Brave/Chromium policies, terminals, editors, and desktop apps
-    try:
-        subprocess.Popen(["omarchy-theme-set-browser"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-restart-terminal"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-theme-set-gnome"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-theme-set-foot"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-theme-set-tmux"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-restart-btop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-theme-set-vscode"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-theme-set-obsidian"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-restart-opencode"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen(["omarchy-restart-helix"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        log(f"Live app theme sync notice: {e}")
-
-def run_loop():
-    daemon_lock = None
-    try:
-        os.makedirs(os.path.dirname(DAEMON_LOCK_FILE), exist_ok=True)
-        daemon_lock = open(DAEMON_LOCK_FILE, "a+")
-        try:
-            fcntl.flock(daemon_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            log("Aura Material Cycler is already running; exiting duplicate daemon.")
-            return
-
-        os.makedirs(STATE_DIR, exist_ok=True)
-        atomic_write_text(PID_FILE, f"{os.getpid()}\n", 0o600)
-        log("Aura Material Cycler service started.")
-        last_fetch = 0
+    def guarded_sleep(seconds):
+        deadline = time.monotonic() + max(0.0, float(seconds))
         while True:
-            try:
-                apply_next_wallpaper()
-                cfg = load_config()
-                now = time.time()
-                if cfg.get("stream_online", False) and now - last_fetch > 1800:
-                    last_fetch = now
-                    try:
-                        fetch_4k_wallpapers(2)
-                    except Exception:
-                        pass
-            except Exception as e:
-                log(f"Loop error: {e}")
-
-            interval = get_interval()
-            sleep_with_keyboard_sync(interval)
-    finally:
-        try:
-            if os.path.exists(PID_FILE):
-                with open(PID_FILE, "r", encoding="utf-8") as f:
-                    if f.read().strip() == str(os.getpid()):
-                        os.unlink(PID_FILE)
-        except OSError:
-            pass
-        if daemon_lock:
-            try:
-                fcntl.flock(daemon_lock.fileno(), fcntl.LOCK_UN)
-                daemon_lock.close()
-            except OSError:
-                pass
-
-def start_daemon():
-    if daemon_is_active() or systemd_is_active():
-        print("Aura Material Cycler is already running.")
-        return
-    if systemd_unit_available():
-        try:
-            res = subprocess.run(["systemctl", "--user", "start", "material-cycler.service"], timeout=5)
-            if res.returncode == 0:
-                print("Aura Material Cycler started successfully via systemd.")
+            if not lifecycle_allows_run():
+                raise SystemExit(0)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            pass
+            original_sleep(min(5.0, remaining))
 
-    try:
-        subprocess.Popen(
-            [sys.executable, os.path.realpath(__file__), "run"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+    core.sleep_with_keyboard_sync = guarded_sleep
+    return lifecycle_allows_run
+
+
+def _install_bounded_logging(active_control):
+    """Keep Aura's private log bounded without changing the preserved engine."""
+    core = active_control.core
+    original_log = core.log
+    log_path = Path(core.LOG_FILE)
+    lock_path = log_path.with_suffix(log_path.suffix + ".lock")
+
+    def bounded_log(message):
+        lock_handle = None
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.fchmod(fd, 0o600)
+            lock_handle = os.fdopen(fd, "a+")
+            core.fcntl.flock(lock_handle.fileno(), core.fcntl.LOCK_EX)
+            if log_path.is_file():
+                os.chmod(log_path, 0o600)
+            if log_path.is_file() and log_path.stat().st_size >= MAX_LOG_BYTES:
+                oldest = Path(str(log_path) + f".{LOG_BACKUPS}")
+                try:
+                    oldest.unlink()
+                except FileNotFoundError:
+                    pass
+                for index in range(LOG_BACKUPS - 1, 0, -1):
+                    source = Path(str(log_path) + f".{index}")
+                    target = Path(str(log_path) + f".{index + 1}")
+                    if source.exists():
+                        os.replace(source, target)
+                os.replace(log_path, Path(str(log_path) + ".1"))
+            original_log(message)
+            if log_path.is_file():
+                os.chmod(log_path, 0o600)
+            for index in range(1, LOG_BACKUPS + 1):
+                backup = Path(str(log_path) + f".{index}")
+                if backup.is_file():
+                    os.chmod(backup, 0o600)
+        except OSError:
+            original_log(message)
+        finally:
+            if lock_handle is not None:
+                try:
+                    core.fcntl.flock(lock_handle.fileno(), core.fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                lock_handle.close()
+
+    core.log = bounded_log
+
+
+_install_bounded_logging(control)
+
+# Preserve the import surface used by Aura's regression tests and existing
+# helper scripts. The public file remains small; implementation lives in the
+# control/runtime layers.
+for _name in dir(control):
+    if not _name.startswith("__"):
+        globals().setdefault(_name, getattr(control, _name))
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] == "reset" and "--yes" not in argv[1:]:
+        print(
+            "Refusing destructive reset without --yes. "
+            "Use: aura-cycler reset --yes [--keep-favorites] [--keep-folders]"
         )
-        time.sleep(0.25)
-    except OSError as error:
-        print(f"Failed to start Aura Material Cycler: {error}")
-        return
-    print("Aura Material Cycler started in the user session.") if daemon_is_active() else print("Aura Material Cycler did not start; check the log.")
+        return 2
 
-def stop_daemon():
-    if systemd_is_active():
-        try:
-            subprocess.run(["systemctl", "--user", "stop", "material-cycler.service"], timeout=5)
-            print("Aura Material Cycler stopped.")
-            return
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            pass
+    if argv and argv[0] == "run":
+        enabled = _plugin_enabled_from_shell(control)
+        if enabled is False:
+            control.core.log("Aura plugin is disabled in Omarchy; refusing daemon start.")
+            return 0
+        _install_omarchy_lifecycle_guard(control)
 
-    try:
-        if os.path.islink(PID_FILE):
-            print("Refusing to read a symlinked Aura Material Cycler PID file.")
-            return
-        with open(PID_FILE, "r", encoding="utf-8") as f:
-            pid = int(f.read().strip())
-        if not daemon_process_matches(pid):
-            print("Refusing to signal an unrelated process; Aura PID is stale.")
-            return
-        os.kill(pid, signal.SIGTERM)
-        print("Aura Material Cycler stopped.")
-    except (FileNotFoundError, ValueError, ProcessLookupError):
-        print("Aura Material Cycler is already stopped.")
-    except PermissionError:
-        print("Could not stop Aura Material Cycler: permission denied.")
+    handled = hardware_layer.dispatch(control, argv)
+    if handled is not None:
+        return handled
+    handled = config_layer.dispatch(control, argv)
+    if handled is not None:
+        return handled
+    return control._dispatch()
 
-def toggle_daemon():
-    if daemon_is_active() or systemd_is_active():
-        stop_daemon()
-    else:
-        start_daemon()
-
-def cycle_interval():
-    steps = [15, 30, 60, 300, 600, 1800, 3600]
-    cur = get_interval()
-    try:
-        idx = steps.index(cur)
-        next_val = steps[(idx + 1) % len(steps)]
-    except ValueError:
-        next_val = 300
-    set_interval(next_val)
-    label = f"{next_val}s" if next_val < 60 else f"{next_val // 60}m"
-    try:
-        subprocess.run([
-            "notify-send", "-a", "Aura Cycler",
-            "-h", "string:x-canonical-private-synchronous:aura-cycler-speed",
-            "Rotation Speed Updated",
-            f"Wallpaper interval set to {label} ({next_val}s)"
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-    except Exception:
-        pass
-    print(f"Cycle interval updated to {next_val}s ({label}).")
-
-def keyboard_policy(mode):
-    """Apply an explicit user keyboard action without blocking later manual changes."""
-    mode = str(mode or "").strip().lower()
-    if mode in ("off", "lock"):
-        success = set_keyboard_brightness("off")
-        if success:
-            print("Keyboard backlight set to Off; wallpaper sync will not write while it is Off.")
-        else:
-            print("Could not turn off keyboard backlight (no supported backlight driver found or permissions needed).")
-    elif mode in ("allow", "on", "unlock"):
-        print("Keyboard backlight sync enabled; wallpaper sync respects your manual brightness.")
-    else:
-        print("Usage: aura-cycler keyboard {off|allow}")
-
-def folder_cmd(args):
-    cfg = load_config()
-    folders = cfg.get("custom_folders", [])
-    if not args or args[0] == "list":
-        print("Configured Wallpaper Folders:")
-        for idx, f in enumerate(folders, 1):
-            exp = os.path.expanduser(f)
-            count = 0
-            if os.path.exists(exp):
-                count = sum(1 for _, _, files in os.walk(exp) for file in files if file.lower().endswith(IMAGE_EXTENSIONS))
-            print(f"  {idx}. {f} ({count} wallpapers)")
-        return
-    
-    sub = args[0].lower()
-    if sub == "add":
-        if len(args) < 2:
-            print("Usage: aura-cycler folder add <path>")
-            return
-        new_path = args[1].strip()
-        exp = os.path.expanduser(new_path)
-        if not os.path.exists(exp):
-            print(f"Notice: Directory '{new_path}' does not exist on disk yet, added to rotation list.")
-        if new_path not in folders:
-            folders.append(new_path)
-            cfg["custom_folders"] = folders
-            save_config(cfg)
-            invalidate_wallpapers_cache()
-            print(f"Added folder: {new_path}")
-        else:
-            print(f"Folder is already configured: {new_path}")
-    elif sub in ("remove", "rm", "delete"):
-        if len(args) < 2:
-            print("Usage: aura-cycler folder remove <path>")
-            return
-        target = args[1].strip()
-        matched = False
-        new_folders = []
-        for f in folders:
-            if f == target or os.path.expanduser(f) == os.path.expanduser(target):
-                matched = True
-            else:
-                new_folders.append(f)
-        if matched:
-            cfg["custom_folders"] = new_folders
-            save_config(cfg)
-            invalidate_wallpapers_cache()
-            print(f"Removed folder: {target}")
-        else:
-            print(f"Folder not found: {target}")
-    else:
-        print("Usage: aura-cycler folder {list|add <path>|remove <path>}")
-
-def weather_toggle():
-    cfg = load_config()
-    current = cfg.get("weather_sync", True)
-    cfg["weather_sync"] = not current
-    save_config(cfg)
-    status = "Enabled" if cfg["weather_sync"] else "Disabled"
-    print(f"Weather-adaptive wallpaper sync: {status}")
-
-def stream_toggle():
-    cfg = load_config()
-    current = cfg.get("stream_online", False)
-    cfg["stream_online"] = not current
-    save_config(cfg)
-    status = "Enabled" if cfg["stream_online"] else "Disabled"
-    print(f"Online 4K UHD streaming: {status}")
-
-def status_json():
-    global QUIET_OUTPUT
-    QUIET_OUTPUT = True
-    active = daemon_is_active() or systemd_is_active()
-    cfg = load_config()
-    wallpapers = collect_local_wallpapers(validate=False)
-    
-    current_wp = ""
-    current_wp_link = os.path.expanduser("~/.local/state/omarchy/current/background")
-    if os.path.islink(current_wp_link):
-        try:
-            current_wp = os.path.realpath(current_wp_link)
-        except Exception:
-            pass
-    elif os.path.exists(current_wp_link):
-        current_wp = current_wp_link
-
-    accent = "#00FF66"
-    if os.path.exists(PALETTE_STATE_FILE):
-        try:
-            with open(PALETTE_STATE_FILE, "r", encoding="utf-8") as f:
-                pdata = json.load(f)
-                accent = pdata.get("accent") or pdata.get("keyboard") or "#00FF66"
-        except Exception:
-            pass
-
-    weather_data = get_weather()
-    with gpu_guard_lock():
-        gpu_guard_data = gpu_guard_status(apply_protection=True)
-
-    state = {
-        "active": active,
-        "interval": cfg.get("interval", 300),
-        "blur": cfg.get("blur", 12),
-        "wallpaper": current_wp,
-        "wallpaper_name": os.path.basename(current_wp) if current_wp else "Active",
-        "accent": accent,
-        "keyboard_brightness": get_keyboard_brightness() or "unavailable",
-        "weather": {
-            "temp": weather_data.get("temp", 22),
-            "condition": weather_data.get("condition", "Clear"),
-            "icon": weather_data.get("icon", "󰖙"),
-            "city": weather_data.get("city", "Local"),
-            "code": weather_data.get("code", 0),
-            "is_day": weather_data.get("is_day", True)
-        },
-        "weather_sync": cfg.get("weather_sync", True),
-        "stream_online": cfg.get("stream_online", False),
-        "gpu_guard": gpu_guard_data,
-        "custom_folders": cfg.get("custom_folders", []),
-        "wallpapers_count": len(wallpapers),
-        "screen_effects": cfg.get("screen_effects", True),
-        "screen_effects_mode": cfg.get("screen_effects_mode", "auto"),
-        "screen_effects_layer": cfg.get("screen_effects_layer", "bottom"),
-        "screen_effects_intensity": cfg.get("screen_effects_intensity", 1.0)
-    }
-    print(json.dumps(state))
-    QUIET_OUTPUT = False
-
-def effects_cmd(args):
-    cfg = load_config()
-    if not args or args[0] in ("toggle", "toggle-effects"):
-        cfg["screen_effects"] = not cfg.get("screen_effects", True)
-        save_config(cfg)
-        print(f"Screen weather effects: {'Enabled' if cfg['screen_effects'] else 'Disabled'}")
-    elif args[0] in ("on", "enable"):
-        cfg["screen_effects"] = True
-        save_config(cfg)
-        print("Screen weather effects: Enabled")
-    elif args[0] in ("off", "disable"):
-        cfg["screen_effects"] = False
-        save_config(cfg)
-        print("Screen weather effects: Disabled")
-    elif args[0] == "mode":
-        if len(args) > 1:
-            mode = args[1].lower()
-            if mode in ("auto", "rain", "thunder", "snow", "sun", "stars", "fog"):
-                cfg["screen_effects_mode"] = mode
-                save_config(cfg)
-                print(f"Screen weather effects mode set to: {mode}")
-            else:
-                print("Invalid mode. Choose from: auto, rain, thunder, snow, sun, stars, fog")
-        else:
-            print(f"Current effects mode: {cfg.get('screen_effects_mode', 'auto')}")
-    elif args[0] == "layer":
-        if len(args) > 1:
-            layer = args[1].lower()
-            if layer in ("bottom", "top", "overlay"):
-                cfg["screen_effects_layer"] = "top" if layer in ("top", "overlay") else "bottom"
-                save_config(cfg)
-                print(f"Screen weather effects layer set to: {cfg['screen_effects_layer']}")
-        else:
-            cur = cfg.get("screen_effects_layer", "bottom")
-            cfg["screen_effects_layer"] = "top" if cur == "bottom" else "bottom"
-            save_config(cfg)
-            print(f"Toggled screen weather effects layer to: {cfg['screen_effects_layer']}")
-    elif args[0] in ("intensity", "scale"):
-        if len(args) > 1:
-            try:
-                scale = float(args[1])
-                cfg["screen_effects_intensity"] = max(0.2, min(2.5, scale))
-                save_config(cfg)
-                print(f"Screen weather effects intensity set to: {cfg['screen_effects_intensity']}")
-            except ValueError:
-                print("Usage: aura-cycler effects intensity <0.5..2.0>")
-        else:
-            print(f"Current effects intensity: {cfg.get('screen_effects_intensity', 1.0)}")
-    else:
-        print("Usage: aura-cycler effects {on|off|toggle|mode <auto|rain|thunder|snow|sun|stars|fog>|layer <bottom|top>|intensity <num>}")
-
-def status_daemon():
-    wallpapers = collect_local_wallpapers(validate=False)
-    cfg = load_config()
-    weather = get_weather()
-    status_str = "active (running)" if (daemon_is_active() or systemd_is_active()) else "inactive (stopped)"
-    kbd = get_keyboard_brightness()
-    kbd_str = f"brightness '{kbd}' (syncs only when on)" if kbd else "not detected / off"
-    print(f"● aura-cycler: {status_str} | Interval: {get_interval()}s | Blur: {get_blur()}px")
-    print(f"  Available wallpaper pool: {len(wallpapers)} wallpapers across {len(cfg.get('custom_folders', []))} folders")
-    if weather:
-        print(f"  Live Weather: {weather.get('icon', '')} {weather.get('temp', '')}°C ({weather.get('condition', '')}, {weather.get('city', '')})")
-    print(f"  Weather sync: {'Enabled' if cfg.get('weather_sync', True) else 'Disabled'} | Screen atmospheric particles: {'Enabled (' + cfg.get('screen_effects_mode', 'auto') + ')' if cfg.get('screen_effects', True) else 'Disabled'}")
-    print(f"  Keyboard Backlight: {kbd_str}")
 
 if __name__ == "__main__":
-    action = sys.argv[1] if len(sys.argv) > 1 else "start"
-    if action == "run":
-        run_loop()
-    elif action == "start":
-        start_daemon()
-    elif action == "stop":
-        stop_daemon()
-    elif action == "toggle":
-        toggle_daemon()
-    elif action == "restart":
-        stop_daemon()
-        time.sleep(1)
-        start_daemon()
-    elif action == "status":
-        status_daemon()
-    elif action == "status-json":
-        status_json()
-    elif action == "next":
-        apply_next_wallpaper()
-    elif action in ("cycle-interval", "speed"):
-        cycle_interval()
-    elif action == "interval":
-        if len(sys.argv) > 2 and sys.argv[2].isdigit():
-            set_interval(int(sys.argv[2]))
-            print(f"Cycle interval updated to {sys.argv[2]} seconds.")
-        else:
-            print(f"Current interval: {get_interval()} seconds. Usage: aura-cycler interval <seconds>")
-    elif action == "blur":
-        sub = sys.argv[2] if len(sys.argv) > 2 else "get"
-        if sub == "up":
-            adjust_blur(+3)
-        elif sub == "down":
-            adjust_blur(-3)
-        elif sub == "toggle":
-            toggle_blur()
-        elif sub.isdigit():
-            set_blur(int(sub))
-        else:
-            print(f"Current glass blur: {get_blur()}px. Usage: aura-cycler blur [up|down|toggle|<size>]")
-    elif action == "fetch":
-        fetch_4k_wallpapers(10)
-    elif action == "keyboard":
-        sub = sys.argv[2] if len(sys.argv) > 2 else "status"
-        if sub in ("off", "lock", "allow", "on", "unlock"):
-            keyboard_policy(sub)
-        else:
-            print(f"Keyboard brightness: {get_keyboard_brightness()}; color writes only when LEDs are already on")
-            print("Usage: aura-cycler keyboard {off|allow}")
-    elif action in ("weather-toggle", "toggle-weather"):
-        weather_toggle()
-    elif action in ("stream-toggle", "toggle-stream"):
-        stream_toggle()
-    elif action in ("folder", "folders"):
-        folder_cmd(sys.argv[2:])
-    elif action in ("effects", "screen-effects", "atmosphere"):
-        effects_cmd(sys.argv[2:])
-    elif action in ("gpu-guard", "guard"):
-        gpu_guard_cmd(sys.argv[2:])
-    else:
-        print("Usage: aura-cycler {start|stop|toggle|restart|status|status-json|next|interval <sec>|blur [up|down|<px>]|weather-toggle|stream-toggle|folder {list|add|remove}|effects {toggle|mode|layer|intensity}|gpu-guard {status|toggle-protect}|fetch|keyboard {off|allow}}")
+    raise SystemExit(main())

@@ -1,0 +1,846 @@
+#!/usr/bin/env python3
+"""Aura Material Cycler v1.4 hardened runtime.
+
+The feature engine lives in ``aura-cycler-core``.  This small front-end keeps
+the mature engine intact while applying privacy, configuration, GPU-protection,
+and rollback fixes in one easy-to-review layer.
+"""
+
+import copy
+import csv
+import fcntl
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CORE_PATH = HERE / "aura-cycler-core"
+WRAPPER_PATH = Path(__file__).resolve()
+
+if not CORE_PATH.is_file():
+    raise SystemExit(f"Aura core is missing: {CORE_PATH}")
+
+_loader = SourceFileLoader("aura_cycler_core", str(CORE_PATH))
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
+core = importlib.util.module_from_spec(_spec)
+_loader.exec_module(core)
+
+HOME = Path.home()
+XDG_DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")).expanduser()
+XDG_STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")).expanduser()
+XDG_CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")).expanduser()
+XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")).expanduser()
+XDG_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/aura-{os.getuid()}")).expanduser()
+
+AURA_DATA_DIR = XDG_DATA_HOME / "omarchy/dynamic-wallpapers"
+AURA_STATE_DIR = XDG_STATE_HOME / "omarchy"
+AURA_CACHE_DIR = XDG_CACHE_HOME / "omarchy/aura-cycler"
+AURA_CONFIG_DIR = XDG_CONFIG_HOME / "aura-cycler"
+
+LEGACY_CONFIG_FILE = HOME / ".local/state/omarchy/aura-cycler-config.json"
+
+core.CACHE_DIR = str(AURA_DATA_DIR)
+core.STATE_DIR = str(AURA_STATE_DIR)
+core.CONFIG_FILE = str(AURA_STATE_DIR / "aura-cycler-config.json")
+core.PID_FILE = str(AURA_STATE_DIR / "material-cycler.pid")
+core.LOG_FILE = str(AURA_STATE_DIR / "material-cycler.log")
+core.INTERVAL_FILE = str(AURA_STATE_DIR / "material-cycler-interval.txt")
+core.BLUR_FILE = str(AURA_STATE_DIR / "glass-blur.txt")
+core.PALETTE_STATE_FILE = str(AURA_STATE_DIR / "wallpaper-palette.json")
+core.PALETTE_CACHE_DIR = str(AURA_CACHE_DIR / "palettes")
+core.CURRENT_THEME_DIR = str(AURA_STATE_DIR / "current/theme")
+core.NEXT_THEME_DIR = str(AURA_STATE_DIR / "current/next-theme")
+core.THEME_LOCK_FILE = str(XDG_RUNTIME_DIR / "omarchy-theme-set.lock")
+core.KEYBOARD_LOCK_FILE = str(AURA_STATE_DIR / "keyboard-color.lock")
+core.DAEMON_LOCK_FILE = str(XDG_RUNTIME_DIR / "aura-cycler.lock")
+core.GPU_GUARD_LOCK_FILE = str(XDG_RUNTIME_DIR / "aura-cycler-gpu-guard.lock")
+core.WALLHAVEN_KEY_FILE = str(AURA_CONFIG_DIR / "wallhaven.key")
+
+core.DEFAULT_CONFIG = copy.deepcopy(core.DEFAULT_CONFIG)
+core.DEFAULT_CONFIG.update({
+    "custom_folders": [
+        str(AURA_DATA_DIR),
+        str(XDG_CACHE_HOME / "omarchy/wallpapers"),
+        str(HOME / "Pictures/Wallpapers"),
+    ],
+    # v1.4 privacy default: fresh installs make no weather/location requests.
+    "weather_sync": False,
+    "stream_online": False,
+    "screen_effects": False,
+    "location_mode": "off",  # off | auto | manual
+    "manual_location": None,
+    "keyboard_sync": True,
+})
+core.DEFAULT_CONFIG["gpu_guard"] = copy.deepcopy(core.GPU_GUARD_DEFAULTS)
+
+
+def _read_json_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _migrate_legacy_config_if_needed():
+    target = Path(core.CONFIG_FILE)
+    legacy = LEGACY_CONFIG_FILE
+    if target == legacy or target.exists() or not legacy.is_file():
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = legacy.read_text(encoding="utf-8")
+        core.atomic_write_text(str(target), data, 0o600)
+    except OSError:
+        pass
+
+
+def load_config():
+    """Load Aura config with safe defaults and backward-compatible migration."""
+    _migrate_legacy_config_if_needed()
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    saved = _read_json_file(core.CONFIG_FILE)
+    if saved:
+        cfg.update(saved)
+        # Existing v1.3 users who had weather enabled keep that behavior.
+        if "location_mode" not in saved:
+            cfg["location_mode"] = "auto" if saved.get("weather_sync", True) else "off"
+    else:
+        cfg["location_mode"] = "off"
+
+    gpu = copy.deepcopy(core.GPU_GUARD_DEFAULTS)
+    if isinstance(cfg.get("gpu_guard"), dict):
+        gpu.update(cfg["gpu_guard"])
+    cfg["gpu_guard"] = gpu
+
+    cfg["keyboard_sync"] = bool(cfg.get("keyboard_sync", True))
+    cfg["weather_sync"] = bool(cfg.get("weather_sync", False))
+    cfg["stream_online"] = bool(cfg.get("stream_online", False))
+    if cfg.get("location_mode") not in {"off", "auto", "manual"}:
+        cfg["location_mode"] = "off"
+
+    if os.path.exists(core.INTERVAL_FILE):
+        try:
+            cfg["interval"] = max(5, int(Path(core.INTERVAL_FILE).read_text().strip()))
+        except (OSError, ValueError):
+            pass
+    if os.path.exists(core.BLUR_FILE):
+        try:
+            cfg["blur"] = max(0, min(24, int(Path(core.BLUR_FILE).read_text().strip())))
+        except (OSError, ValueError):
+            pass
+    return cfg
+
+
+def save_config(cfg):
+    """Persist private state owner-only because it may contain location data."""
+    try:
+        Path(core.STATE_DIR).mkdir(parents=True, exist_ok=True)
+        core.atomic_write_text(core.CONFIG_FILE, json.dumps(cfg, indent=2) + "\n", 0o600)
+        if "interval" in cfg:
+            core.atomic_write_text(core.INTERVAL_FILE, str(cfg["interval"]) + "\n", 0o600)
+        if "blur" in cfg:
+            core.atomic_write_text(core.BLUR_FILE, str(cfg["blur"]) + "\n", 0o600)
+    except Exception as error:
+        core.log(f"Error saving config: {error}")
+
+
+core.load_config = load_config
+core.save_config = save_config
+
+
+def _valid_manual_location(value):
+    if not isinstance(value, dict):
+        return None
+    try:
+        lat = float(value["lat"])
+        lon = float(value["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return {
+        "lat": lat,
+        "lon": lon,
+        "city": str(value.get("city") or "Manual"),
+        "country": str(value.get("country") or ""),
+        "timestamp": float(value.get("timestamp") or time.time()),
+        "source": "manual",
+    }
+
+
+def get_location(force=False):
+    cfg = load_config()
+    mode = cfg.get("location_mode", "off")
+    if mode == "off":
+        return None
+    if mode == "manual":
+        return _valid_manual_location(cfg.get("manual_location"))
+
+    cached = cfg.get("location_cache")
+    now = time.time()
+    if not force and isinstance(cached, dict) and now - float(cached.get("timestamp", 0) or 0) < 21600:
+        valid = _valid_manual_location(cached)
+        if valid:
+            valid["source"] = "ip-cache"
+            return valid
+
+    try:
+        request = urllib.request.Request(
+            "https://ipapi.co/json/",
+            headers={"User-Agent": "AuraCycler/1.4"},
+        )
+        with urllib.request.urlopen(request, timeout=4.0) as response:
+            data = core.read_capped_json(response)
+        lat = float(data["latitude"])
+        lon = float(data["longitude"])
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            raise ValueError("IP geolocation returned invalid coordinates")
+        location = {
+            "lat": lat,
+            "lon": lon,
+            "city": str(data.get("city") or "Local"),
+            "country": str(data.get("country_name") or data.get("country") or ""),
+            "timestamp": now,
+            "source": "ip",
+        }
+        cfg["location_cache"] = location
+        save_config(cfg)
+        return location
+    except Exception as error:
+        core.log(f"Location lookup unavailable: {error}")
+        if isinstance(cached, dict):
+            valid = _valid_manual_location(cached)
+            if valid:
+                valid["source"] = "ip-cache-stale"
+                return valid
+        return None
+
+
+core.get_location = get_location
+
+
+def _weather_unavailable(reason, city="Disabled"):
+    return {
+        "available": False,
+        "source": "unavailable",
+        "stale": False,
+        "reason": reason,
+        "temp": 0,
+        "condition": reason,
+        "icon": "󰖪",
+        "code": -1,
+        "city": city,
+        "is_day": True,
+        "topics": list(core.AESTHETIC_TOPICS),
+        "timestamp": time.time(),
+    }
+
+
+def get_weather(force=False):
+    cfg = load_config()
+    if not cfg.get("weather_sync", False):
+        return _weather_unavailable("Weather sync off")
+
+    cached = cfg.get("weather_cache")
+    now = time.time()
+    if not force and isinstance(cached, dict) and now - float(cached.get("timestamp", 0) or 0) < 600:
+        result = dict(cached)
+        result.setdefault("available", True)
+        result.setdefault("source", "cache")
+        result.setdefault("stale", False)
+        return result
+
+    location = get_location(force=force)
+    if not location:
+        return _weather_unavailable("Location not configured", "Unavailable")
+
+    try:
+        query = urllib.parse.urlencode({
+            "latitude": location["lat"],
+            "longitude": location["lon"],
+            "current": "temperature_2m,relative_humidity_2m,weather_code,is_day",
+        })
+        request = urllib.request.Request(
+            f"https://api.open-meteo.com/v1/forecast?{query}",
+            headers={"User-Agent": "AuraCycler/1.4"},
+        )
+        with urllib.request.urlopen(request, timeout=4.0) as response:
+            data = core.read_capped_json(response)
+        current = data.get("current") or {}
+        code = int(current["weather_code"])
+        temp = float(current["temperature_2m"])
+        is_day = bool(current.get("is_day", 1))
+        meta = core.WMO_WEATHER_MAP.get(code)
+        if meta:
+            condition, day_icon, night_icon, night_topics, day_topics = meta
+            icon = day_icon if is_day else night_icon
+            topics = day_topics if is_day else night_topics
+        else:
+            condition = "Partly Cloudy"
+            icon = "󰖕" if is_day else "󰖖"
+            topics = ["landscape 4k", "nature 4k"]
+
+        result = {
+            "available": True,
+            "source": "live",
+            "stale": False,
+            "temp": round(temp),
+            "humidity": int(float(current.get("relative_humidity_2m", 0) or 0)),
+            "condition": condition,
+            "icon": icon,
+            "code": code,
+            "city": location.get("city") or "Local",
+            "is_day": is_day,
+            "topics": topics,
+            "timestamp": now,
+        }
+        cfg["weather_cache"] = result
+        save_config(cfg)
+        return result
+    except Exception as error:
+        core.log(f"Weather lookup unavailable: {error}")
+        if isinstance(cached, dict):
+            result = dict(cached)
+            result["available"] = True
+            result["source"] = "cache"
+            result["stale"] = True
+            result["reason"] = str(error)
+            return result
+        return _weather_unavailable("Weather unavailable", location.get("city") or "Local")
+
+
+core.get_weather = get_weather
+
+
+def weather_toggle():
+    cfg = load_config()
+    enabling = not cfg.get("weather_sync", False)
+    cfg["weather_sync"] = enabling
+    if enabling and cfg.get("location_mode", "off") == "off":
+        cfg["location_mode"] = "auto"
+    save_config(cfg)
+    if enabling:
+        print("Weather-adaptive sync: Enabled (automatic HTTPS IP location).")
+    else:
+        print("Weather-adaptive sync: Disabled (no weather/location requests).")
+
+
+core.weather_toggle = weather_toggle
+
+
+def location_cmd(args):
+    cfg = load_config()
+    if not args or args[0] == "status":
+        mode = cfg.get("location_mode", "off")
+        manual = cfg.get("manual_location") if mode == "manual" else None
+        print(json.dumps({"mode": mode, "manual_location": manual}))
+        return
+
+    mode = args[0].lower()
+    if mode == "off":
+        cfg["location_mode"] = "off"
+        cfg["weather_sync"] = False
+        save_config(cfg)
+        print("Location: Off. Weather sync also disabled.")
+        return
+    if mode == "auto":
+        cfg["location_mode"] = "auto"
+        cfg["weather_sync"] = True
+        save_config(cfg)
+        print("Location: Automatic HTTPS IP geolocation. Weather sync enabled.")
+        return
+    if mode == "manual":
+        if len(args) < 3:
+            print("Usage: aura-cycler location manual <latitude> <longitude> [city]")
+            return
+        try:
+            lat = float(args[1])
+            lon = float(args[2])
+        except ValueError:
+            print("Latitude and longitude must be numbers.")
+            return
+        candidate = {
+            "lat": lat,
+            "lon": lon,
+            "city": " ".join(args[3:]).strip() or "Manual",
+            "country": "",
+            "timestamp": time.time(),
+        }
+        valid = _valid_manual_location(candidate)
+        if not valid:
+            print("Invalid coordinates. Latitude must be -90..90 and longitude -180..180.")
+            return
+        cfg["location_mode"] = "manual"
+        cfg["manual_location"] = valid
+        cfg["weather_sync"] = True
+        cfg["weather_cache"] = None
+        save_config(cfg)
+        print(f"Location: Manual ({valid['city']}, {valid['lat']}, {valid['lon']}).")
+        return
+    print("Usage: aura-cycler location {status|off|auto|manual <lat> <lon> [city]}")
+
+
+_original_set_keyboard_color = core.set_keyboard_color
+
+
+def set_keyboard_color(hex_code):
+    if not load_config().get("keyboard_sync", True):
+        return False
+    return _original_set_keyboard_color(hex_code)
+
+
+core.set_keyboard_color = set_keyboard_color
+
+
+def keyboard_policy(mode):
+    mode = str(mode or "").strip().lower()
+    cfg = load_config()
+    if mode in {"sync-off", "disable"}:
+        cfg["keyboard_sync"] = False
+        save_config(cfg)
+        print("Keyboard color sync: Disabled.")
+    elif mode in {"sync-on", "allow", "on", "unlock"}:
+        cfg["keyboard_sync"] = True
+        save_config(cfg)
+        print("Keyboard color sync: Enabled; manual brightness remains respected.")
+    elif mode in {"off", "lock"}:
+        success = core.set_keyboard_brightness("off")
+        print(
+            "Keyboard backlight set to Off; Aura will respect that manual state."
+            if success
+            else "Could not turn off keyboard backlight (unsupported driver or permissions)."
+        )
+    else:
+        print("Usage: aura-cycler keyboard {off|sync-on|sync-off}")
+
+
+core.keyboard_policy = keyboard_policy
+
+
+_original_collect_gpu_guard_metrics = core.collect_gpu_guard_metrics
+
+
+def _read_int(path, default=None):
+    try:
+        return int(Path(path).read_text().strip())
+    except (OSError, ValueError):
+        return default
+
+
+def _linux_drm_gpu_metrics():
+    drm = Path("/sys/class/drm")
+    if not drm.is_dir():
+        return None
+    for card in sorted(drm.glob("card[0-9]*")):
+        device = card / "device"
+        vendor = (device / "vendor")
+        try:
+            vendor_id = vendor.read_text().strip().lower()
+        except OSError:
+            continue
+        provider = {"0x1002": "amd", "0x8086": "intel"}.get(vendor_id)
+        if not provider:
+            continue
+
+        total_bytes = _read_int(device / "mem_info_vram_total", 0) or 0
+        used_bytes = _read_int(device / "mem_info_vram_used", 0) or 0
+        total_mib = int(total_bytes / (1024 * 1024)) if total_bytes else 0
+        used_mib = int(used_bytes / (1024 * 1024)) if used_bytes else 0
+        busy = _read_int(device / "gpu_busy_percent", 0) or 0
+
+        temperature = 0
+        for hwmon in (device / "hwmon").glob("hwmon*"):
+            raw = _read_int(hwmon / "temp1_input")
+            if raw is not None:
+                temperature = int(raw / 1000) if raw > 1000 else int(raw)
+                break
+
+        if not (total_mib or busy or temperature):
+            continue
+        return {
+            "available": True,
+            "provider": provider,
+            "name": f"{provider.upper()} GPU",
+            "used_mib": max(0, used_mib),
+            "total_mib": max(0, total_mib),
+            "vram_percent": round((used_mib / total_mib) * 100, 1) if total_mib else 0.0,
+            "utilization_percent": max(0, min(100, busy)),
+            "temperature_c": max(0, temperature),
+            "power_draw_w": 0.0,
+            "power_limit_w": 0.0,
+        }, []
+    return None
+
+
+def collect_gpu_guard_metrics(max_age=5.0):
+    metrics, processes = _original_collect_gpu_guard_metrics(max_age=max_age)
+    if metrics.get("available"):
+        metrics = dict(metrics)
+        metrics.setdefault("provider", "nvidia")
+        return metrics, processes
+    fallback = _linux_drm_gpu_metrics()
+    if fallback:
+        core._LAST_GPU_METRICS = fallback
+        core._LAST_GPU_METRICS_TIME = time.time()
+        return fallback
+    return metrics, processes
+
+
+core.collect_gpu_guard_metrics = collect_gpu_guard_metrics
+
+
+def apply_gpu_guard_protection(metrics, state):
+    """Suspend work inside the daemon instead of depending on systemd."""
+    level = core.gpu_guard_level(metrics, state)
+    if not state.get("auto_protect") or not metrics.get("available"):
+        return ""
+    if level == "critical" and not state.get("aura_paused"):
+        state["aura_paused"] = True
+        state["last_action"] = "Paused Aura cycling at critical GPU pressure"
+        return state["last_action"]
+    if level == "nominal" and state.get("aura_paused"):
+        state["aura_paused"] = False
+        state["last_action"] = "Resumed Aura cycling after GPU pressure cleared"
+        return state["last_action"]
+    return ""
+
+
+core.apply_gpu_guard_protection = apply_gpu_guard_protection
+
+
+def daemon_process_matches(pid):
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as handle:
+            argv = [part.decode("utf-8", errors="replace") for part in handle.read().split(b"\0") if part]
+        absolute_args = {os.path.realpath(arg) for arg in argv if arg.startswith("/")}
+        expected = {os.path.realpath(str(WRAPPER_PATH)), os.path.realpath(str(CORE_PATH))}
+        return bool(expected & absolute_args) and "run" in argv[1:]
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+core.daemon_process_matches = daemon_process_matches
+
+
+def start_daemon():
+    if core.daemon_is_active() or core.systemd_is_active():
+        print("Aura Material Cycler is already running.")
+        return
+    if core.systemd_unit_available():
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "start", "material-cycler.service"],
+                timeout=5,
+                check=False,
+            )
+            if result.returncode == 0:
+                print("Aura Material Cycler started successfully via systemd.")
+                return
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        subprocess.Popen(
+            [sys.executable, str(WRAPPER_PATH), "run"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        time.sleep(0.25)
+    except OSError as error:
+        print(f"Failed to start Aura Material Cycler: {error}")
+        return
+    print(
+        "Aura Material Cycler started in the user session."
+        if core.daemon_is_active()
+        else "Aura Material Cycler did not start; check the log."
+    )
+
+
+core.start_daemon = start_daemon
+
+
+def regenerate_derived_theme_files(colors_raw):
+    """Generate theme templates transactionally and restore staging on failure."""
+    if not colors_raw:
+        return False
+    backup_root = None
+    backup_next = None
+    lock_handle = None
+    succeeded = False
+    try:
+        os.makedirs(core.CURRENT_THEME_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(core.THEME_LOCK_FILE), exist_ok=True)
+        lock_handle = open(core.THEME_LOCK_FILE, "a+")
+        fcntl.flock(lock_handle, fcntl.LOCK_EX)
+
+        if os.path.exists(core.NEXT_THEME_DIR):
+            backup_root = tempfile.mkdtemp(
+                prefix="omarchy-theme-next-",
+                dir=os.path.dirname(core.NEXT_THEME_DIR),
+            )
+            backup_next = os.path.join(backup_root, "next-theme")
+            os.replace(core.NEXT_THEME_DIR, backup_next)
+
+        os.makedirs(core.NEXT_THEME_DIR, exist_ok=True)
+        core.atomic_write_text(os.path.join(core.NEXT_THEME_DIR, "colors.toml"), colors_raw)
+
+        env = os.environ.copy()
+        env.setdefault("OMARCHY_PATH", os.path.expanduser("~/omarchy"))
+        result = subprocess.run(
+            ["omarchy-theme-set-templates"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=env,
+            check=False,
+        )
+        if result.returncode != 0:
+            core.log("Omarchy theme template regeneration failed; restoring previous staging.")
+            return False
+
+        for name in core.THEME_TEMPLATE_FILES:
+            source = os.path.join(core.NEXT_THEME_DIR, name)
+            if os.path.isfile(source):
+                core.atomic_copy_file(source, os.path.join(core.CURRENT_THEME_DIR, name))
+        succeeded = True
+        return True
+    except Exception as error:
+        core.log(f"Omarchy derived theme regeneration error: {error}")
+        return False
+    finally:
+        if not succeeded and backup_next:
+            try:
+                if os.path.exists(core.NEXT_THEME_DIR):
+                    import shutil
+                    shutil.rmtree(core.NEXT_THEME_DIR, ignore_errors=True)
+                os.replace(backup_next, core.NEXT_THEME_DIR)
+                backup_next = None
+            except OSError:
+                pass
+        if backup_root:
+            import shutil
+            shutil.rmtree(backup_root, ignore_errors=True)
+        if lock_handle:
+            try:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                lock_handle.close()
+            except OSError:
+                pass
+
+
+core.regenerate_derived_theme_files = regenerate_derived_theme_files
+
+
+def run_loop():
+    """Run Aura while letting Auto-Protect suspend expensive work in-process."""
+    daemon_lock = None
+    try:
+        os.makedirs(os.path.dirname(core.DAEMON_LOCK_FILE), exist_ok=True)
+        daemon_lock = open(core.DAEMON_LOCK_FILE, "a+")
+        try:
+            fcntl.flock(daemon_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            core.log("Aura Material Cycler is already running; exiting duplicate daemon.")
+            return
+
+        os.makedirs(core.STATE_DIR, exist_ok=True)
+        core.atomic_write_text(core.PID_FILE, f"{os.getpid()}\n", 0o600)
+        core.log("Aura Material Cycler v1.4 hardened runtime started.")
+        last_fetch = 0.0
+
+        while True:
+            try:
+                with core.gpu_guard_lock():
+                    guard = core.gpu_guard_status(apply_protection=True)
+                if guard.get("auto_protect") and guard.get("aura_paused"):
+                    core.sleep_with_keyboard_sync(15)
+                    continue
+
+                core.apply_next_wallpaper()
+                cfg = load_config()
+                now = time.time()
+                if cfg.get("stream_online", False) and now - last_fetch > 1800:
+                    last_fetch = now
+                    try:
+                        core.fetch_4k_wallpapers(2)
+                    except Exception:
+                        pass
+            except Exception as error:
+                core.log(f"Loop error: {error}")
+
+            core.sleep_with_keyboard_sync(core.get_interval())
+    finally:
+        try:
+            if os.path.exists(core.PID_FILE):
+                with open(core.PID_FILE, "r", encoding="utf-8") as handle:
+                    if handle.read().strip() == str(os.getpid()):
+                        os.unlink(core.PID_FILE)
+        except OSError:
+            pass
+        if daemon_lock:
+            try:
+                fcntl.flock(daemon_lock.fileno(), fcntl.LOCK_UN)
+                daemon_lock.close()
+            except OSError:
+                pass
+
+
+core.run_loop = run_loop
+
+
+def status_json():
+    core.QUIET_OUTPUT = True
+    cfg = load_config()
+    active = core.daemon_is_active() or core.systemd_is_active()
+    wallpapers = core.collect_local_wallpapers(validate=False)
+
+    current_wp = ""
+    current_link = AURA_STATE_DIR / "current/background"
+    legacy_link = HOME / ".local/state/omarchy/current/background"
+    for candidate in (current_link, legacy_link):
+        if candidate.is_symlink():
+            current_wp = os.path.realpath(candidate)
+            break
+        if candidate.exists():
+            current_wp = str(candidate)
+            break
+
+    accent = "#00FF66"
+    pdata = _read_json_file(core.PALETTE_STATE_FILE)
+    accent = pdata.get("accent") or pdata.get("keyboard") or accent
+
+    weather = get_weather()
+    with core.gpu_guard_lock():
+        guard = core.gpu_guard_status(apply_protection=True)
+
+    payload = {
+        "runtime_version": "1.4.0",
+        "active": active,
+        "interval": cfg.get("interval", 300),
+        "blur": cfg.get("blur", 12),
+        "wallpaper": current_wp,
+        "wallpaper_name": os.path.basename(current_wp) if current_wp else "Active",
+        "accent": accent,
+        "keyboard_brightness": core.get_keyboard_brightness() or "unavailable",
+        "keyboard_sync": cfg.get("keyboard_sync", True),
+        "weather": {
+            "available": weather.get("available", False),
+            "source": weather.get("source", "unavailable"),
+            "stale": weather.get("stale", False),
+            "temp": weather.get("temp", 0),
+            "condition": weather.get("condition", "Weather unavailable"),
+            "icon": weather.get("icon", "󰖪"),
+            "city": weather.get("city", "Unavailable"),
+            "code": weather.get("code", -1),
+            "is_day": weather.get("is_day", True),
+        },
+        "weather_sync": cfg.get("weather_sync", False),
+        "location_mode": cfg.get("location_mode", "off"),
+        "stream_online": cfg.get("stream_online", False),
+        "gpu_guard": guard,
+        "custom_folders": cfg.get("custom_folders", []),
+        "wallpapers_count": len(wallpapers),
+        "screen_effects": cfg.get("screen_effects", False),
+        "screen_effects_mode": cfg.get("screen_effects_mode", "auto"),
+        "screen_effects_layer": cfg.get("screen_effects_layer", "bottom"),
+        "screen_effects_intensity": cfg.get("screen_effects_intensity", 1.0),
+    }
+    print(json.dumps(payload))
+    core.QUIET_OUTPUT = False
+
+
+core.status_json = status_json
+
+
+def _dispatch():
+    action = sys.argv[1] if len(sys.argv) > 1 else "start"
+    args = sys.argv[2:]
+
+    if action == "run":
+        run_loop()
+    elif action == "start":
+        start_daemon()
+    elif action == "stop":
+        core.stop_daemon()
+    elif action == "toggle":
+        core.stop_daemon() if (core.daemon_is_active() or core.systemd_is_active()) else start_daemon()
+    elif action == "restart":
+        core.stop_daemon()
+        time.sleep(1)
+        start_daemon()
+    elif action == "status":
+        core.status_daemon()
+    elif action == "status-json":
+        status_json()
+    elif action == "next":
+        core.apply_next_wallpaper()
+    elif action in ("cycle-interval", "speed"):
+        core.cycle_interval()
+    elif action == "interval":
+        if args and args[0].isdigit():
+            core.set_interval(int(args[0]))
+            print(f"Cycle interval updated to {args[0]} seconds.")
+        else:
+            print(f"Current interval: {core.get_interval()} seconds. Usage: aura-cycler interval <seconds>")
+    elif action == "blur":
+        sub = args[0] if args else "get"
+        if sub == "up":
+            core.adjust_blur(+3)
+        elif sub == "down":
+            core.adjust_blur(-3)
+        elif sub == "toggle":
+            core.toggle_blur()
+        elif sub.isdigit():
+            core.set_blur(int(sub))
+        else:
+            print(f"Current glass blur: {core.get_blur()}px. Usage: aura-cycler blur [up|down|toggle|<size>]")
+    elif action == "fetch":
+        core.fetch_4k_wallpapers(10)
+    elif action == "keyboard":
+        sub = args[0] if args else "status"
+        if sub in {"off", "lock", "allow", "on", "unlock", "sync-on", "sync-off", "disable"}:
+            keyboard_policy(sub)
+        else:
+            print(json.dumps({
+                "brightness": core.get_keyboard_brightness() or "unavailable",
+                "sync_enabled": load_config().get("keyboard_sync", True),
+            }))
+    elif action in ("weather-toggle", "toggle-weather"):
+        weather_toggle()
+    elif action == "weather-refresh":
+        print(json.dumps(get_weather(force=True)))
+    elif action == "location":
+        location_cmd(args)
+    elif action in ("stream-toggle", "toggle-stream"):
+        core.stream_toggle()
+    elif action in ("folder", "folders"):
+        core.folder_cmd(args)
+    elif action in ("effects", "screen-effects", "atmosphere"):
+        core.effects_cmd(args)
+    elif action in ("gpu-guard", "guard"):
+        core.gpu_guard_cmd(args)
+    else:
+        print(
+            "Usage: aura-cycler {start|stop|toggle|restart|status|status-json|next|"
+            "interval <sec>|blur [up|down|toggle|<px>]|weather-toggle|weather-refresh|"
+            "location {status|off|auto|manual <lat> <lon> [city]}|stream-toggle|"
+            "folder {list|add|remove}|effects {toggle|mode|layer|intensity}|"
+            "gpu-guard {status|toggle-protect}|fetch|keyboard {status|off|sync-on|sync-off}}"
+        )
+
+
+if __name__ == "__main__":
+    _dispatch()
