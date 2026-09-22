@@ -2,7 +2,8 @@
 """Stable public entrypoint for Aura Material Cycler v1.4.
 
 All launches pass through this file so configuration migrations, locking,
-recovery and maintenance policy cannot be bypassed accidentally.
+recovery, hardware adaptation and maintenance policy cannot be bypassed
+accidentally.
 """
 
 import importlib.util
@@ -16,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 PUBLIC_PATH = Path(__file__).resolve()
 CONTROL_PATH = HERE / "aura-cycler-control"
 CONFIG_LAYER_PATH = HERE / "aura-config.py"
+HARDWARE_LAYER_PATH = HERE / "aura-hardware.py"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 2
 
@@ -32,6 +34,7 @@ def _load(name, path):
 
 control = _load("aura_cycler_control", CONTROL_PATH)
 config_layer = _load("aura_cycler_config", CONFIG_LAYER_PATH)
+hardware_layer = _load("aura_cycler_hardware", HARDWARE_LAYER_PATH)
 
 # Omarchy historically stores shell.json under ~/.config/omarchy even on some
 # setups that otherwise use XDG_CONFIG_HOME. Prefer the config-layer XDG lookup,
@@ -75,6 +78,7 @@ config_layer._shell_explicit_settings = _standard_shell_fallback
 control.FRONT_PATH = PUBLIC_PATH
 control.runtime.WRAPPER_PATH = PUBLIC_PATH
 config_layer.install(control)
+hardware_layer.install(control)
 
 
 def _install_bounded_logging(active_control):
@@ -136,6 +140,9 @@ def main():
             "Use: aura-cycler reset --yes [--keep-favorites] [--keep-folders]"
         )
         return 2
+    handled = hardware_layer.dispatch(control, argv)
+    if handled is not None:
+        return handled
     handled = config_layer.dispatch(control, argv)
     if handled is not None:
         return handled
