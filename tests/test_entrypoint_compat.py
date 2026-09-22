@@ -1,6 +1,8 @@
 import fcntl
 import importlib.util
 import json
+
+import pytest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,6 +79,72 @@ def test_xdg_shell_config_remains_preferred(tmp_path, monkeypatch):
     fake = SimpleNamespace(runtime=SimpleNamespace(HOME=home, XDG_CONFIG_HOME=xdg))
     explicit = public._standard_shell_fallback(fake)
     assert explicit["interval"] == 222
+
+
+def test_plugin_enabled_state_tracks_omarchy_shell_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_DISABLE_SHELL_SETTINGS_SYNC", "1")
+    public = load_public("aura_public_plugin_lifecycle_state_test")
+
+    home = tmp_path / "home"
+    xdg = tmp_path / "xdg-config"
+    shell = xdg / "omarchy" / "shell.json"
+    shell.parent.mkdir(parents=True)
+    fake = SimpleNamespace(runtime=SimpleNamespace(HOME=home, XDG_CONFIG_HOME=xdg))
+
+    shell.write_text(json.dumps({
+        "version": 1,
+        "bar": {"layout": {"left": [], "center": [], "right": [
+            {"id": "harshith.aura-cycler"}
+        ]}},
+        "plugins": [],
+    }), encoding="utf-8")
+    assert public._plugin_enabled_from_shell(fake) is True
+
+    shell.write_text(json.dumps({
+        "version": 1,
+        "bar": {"layout": {"left": [], "center": [], "right": []}},
+        "plugins": [],
+    }), encoding="utf-8")
+    assert public._plugin_enabled_from_shell(fake) is False
+
+    shell.unlink()
+    assert public._plugin_enabled_from_shell(fake) is None
+
+
+def test_public_run_refuses_when_omarchy_plugin_is_disabled(monkeypatch):
+    monkeypatch.setenv("AURA_DISABLE_SHELL_SETTINGS_SYNC", "1")
+    public = load_public("aura_public_disabled_run_test")
+    dispatched = []
+
+    monkeypatch.setattr(public, "_plugin_enabled_from_shell", lambda _control: False)
+    monkeypatch.setattr(public.control, "_dispatch", lambda: dispatched.append(True) or 99)
+    monkeypatch.setattr(public.sys, "argv", [str(PUBLIC), "run"])
+
+    assert public.main() == 0
+    assert dispatched == []
+
+
+def test_running_daemon_sleep_exits_after_plugin_disable(monkeypatch):
+    monkeypatch.setenv("AURA_DISABLE_SHELL_SETTINGS_SYNC", "1")
+    public = load_public("aura_public_disable_during_sleep_test")
+    sleeps = []
+    logs = []
+    states = iter([True, False])
+
+    fake_core = SimpleNamespace(
+        sleep_with_keyboard_sync=lambda seconds: sleeps.append(seconds),
+        log=lambda message: logs.append(str(message)),
+    )
+    fake_control = SimpleNamespace(core=fake_core)
+
+    monkeypatch.setattr(public, "_plugin_enabled_from_shell", lambda _control: next(states))
+    guard = public._install_omarchy_lifecycle_guard(fake_control)
+
+    assert guard() is True
+    with pytest.raises(SystemExit) as stopped:
+        fake_core.sleep_with_keyboard_sync(30)
+    assert stopped.value.code == 0
+    assert any("disabled" in message.lower() for message in logs)
 
 
 def test_public_reset_requires_explicit_yes(monkeypatch):
