@@ -27,6 +27,10 @@ BarWidgetImpl {
     id: settingsSyncProc
     running: false
     onExited: {
+      // A second settings change may have arrived while this short-lived
+      // importer was running. Re-check once before refreshing state so rapid
+      // native-settings edits cannot be dropped.
+      Qt.callLater(root._syncAuraSettings)
       if (root.refreshState)
         root.refreshState()
     }
