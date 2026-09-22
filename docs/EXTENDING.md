@@ -9,8 +9,9 @@ v1.4 is the stability baseline. Future features should extend the existing bound
 New Python behavior belongs behind one of these import-only layers:
 
 - `aura-config.py` — configuration, migrations, recovery, backup/restore and native-settings integration;
+- `aura-hardware.py` — GPU/keyboard capability discovery and vendor-specific adapters;
 - `aura-cycler-control` — user-facing orchestration/CLI/state features;
-- `aura-cycler-runtime` — OS/hardware/network integration and hardening;
+- `aura-cycler-runtime` — OS/network/runtime hardening and compatibility;
 - `aura-cycler-core` — retained engine; avoid expanding it further unless fixing existing engine behavior.
 
 Do not add another executable that bypasses the public entrypoint.
@@ -72,13 +73,21 @@ Do not mix a large visual redesign with runtime/security changes in one release.
 
 Every hardware backend must gracefully report unavailable data rather than guess.
 
+New GPU/RGB/vendor support belongs in `aura-hardware.py`, not as model-specific branches inside the preserved core.
+
 A new GPU/RGB/backend path needs:
 
-- detection;
-- bounded timeouts;
-- graceful fallback;
+- runtime capability detection rather than hostname/model matching;
+- bounded subprocess timeouts;
+- graceful fallback when the utility, driver node or sensor is missing;
 - no root requirement unless the product explicitly changes policy;
+- hybrid/multi-device behavior where relevant;
+- a regression test using synthetic sysfs/subprocess data;
 - a real-system verification item.
+
+For GPU monitoring, preserve the invariant that Auto-Protect reacts to the worst pressure across all detected GPUs. For keyboard support, preserve manual-off behavior and allow RGB backends to work on desktops that do not expose laptop backlight sysfs nodes.
+
+See `docs/HARDWARE.md` for the portability contract and test matrix.
 
 ## 7. Test rule
 
