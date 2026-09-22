@@ -15,14 +15,31 @@ Aura is an adaptive appearance runtime for **Omarchy 4 / Quattro**: dynamic wall
 - Dynamic local wallpaper rotation + optional Wallhaven/Bing streaming.
 - On-device Material You palette extraction and Omarchy theme generation.
 - Rain, thunder, snow, sun, stars and fog with fullscreen-aware pausing.
-- RGB/keyboard integration that respects manual brightness/off state.
-- NVIDIA GPU telemetry plus AMD/Intel DRM/sysfs fallback where available.
-- GPU Auto-Protect that pauses expensive Aura work without killing the daemon.
+- Runtime hardware adaptation for laptops/desktops instead of machine-model checks.
+- RGB/keyboard integration that respects manual brightness/off state and supports OpenRGB desktop keyboards without laptop backlight sysfs.
+- NVIDIA + AMD + Intel GPU discovery, including hybrid/multi-GPU aggregation where telemetry is exposed.
+- GPU Auto-Protect that reacts to the worst detected GPU pressure and pauses expensive Aura work without killing the daemon.
 - History, undo, favorites, theme scopes and manual focus/gaming/battery/ambient scenes.
 - Native Omarchy widget settings for interval, blur, weather, streaming, effects, keyboard sync and theme scope.
 - Versioned, locked, recoverable config with backup/restore/reset tooling.
 - Bounded downloads/JSON, path containment, process identity checks and owner-only private state.
 - Bounded private logs with automatic rotation so long-running sessions cannot grow the Aura log indefinitely.
+
+## Hardware portability
+
+Aura is built for the **Omarchy hardware envelope**, not one laptop model. Optional hardware features use runtime capability detection and gracefully become unavailable when a driver/device exposes no compatible controls.
+
+Expected shapes include NVIDIA-, AMD- and Intel-based laptops/desktops; hybrid and multi-GPU systems; ordinary monochrome laptop backlights; ASUS RGB; OpenRGB-controlled desktop/external keyboards; machines with no lighting controls; and systems/VMs where no readable GPU telemetry exists.
+
+On a hybrid or multi-GPU system Aura exposes a per-GPU list and feeds Auto-Protect the highest VRAM pressure, utilization and temperature seen across detected GPUs instead of trusting the first enumerated card.
+
+Inspect what Aura sees on any machine with:
+
+```bash
+"$PLUGIN_DIR/bin/aura-cycler" hardware
+```
+
+Unsupported optional hardware must not stop wallpaper rotation, palettes, scenes, history/favorites or the rest of Aura. See [`docs/HARDWARE.md`](docs/HARDWARE.md) for the portability contract and test matrix.
 
 ## Privacy defaults
 
@@ -95,7 +112,8 @@ Common CLI commands:
 "$PLUGIN_DIR/bin/aura-cycler" scene apply battery
 "$PLUGIN_DIR/bin/aura-cycler" scene apply ambient
 
-# GPU / keyboard
+# GPU / keyboard / hardware
+"$PLUGIN_DIR/bin/aura-cycler" hardware
 "$PLUGIN_DIR/bin/aura-cycler" gpu-guard status
 "$PLUGIN_DIR/bin/aura-cycler" gpu-guard toggle-protect
 "$PLUGIN_DIR/bin/aura-cycler" keyboard sync-on
@@ -151,11 +169,13 @@ bin/aura-cycler                 public entrypoint
         |
         +--> bin/aura-config.py          config/migration/recovery/backup
         |
+        +--> bin/aura-hardware.py        GPU/keyboard capability adaptation
+        |
         v
 bin/aura-cycler-control         history/favorites/scenes/diagnostics
         |
         v
-bin/aura-cycler-runtime         privacy/XDG/GPU/rollback hardening
+bin/aura-cycler-runtime         privacy/XDG/network/rollback hardening
         |
         v
 bin/aura-cycler-core            retained v1.3 feature engine
@@ -175,6 +195,7 @@ The existing large `Panel.qml` is intentionally not structurally rewritten durin
 See:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/HARDWARE.md`](docs/HARDWARE.md)
 - [`docs/EXTENDING.md`](docs/EXTENDING.md)
 - [`docs/TESTING.md`](docs/TESTING.md)
 - [`docs/PRIVACY.md`](docs/PRIVACY.md)
@@ -191,7 +212,7 @@ scripts/smoke-test.sh
 omarchy plugin validate .
 ```
 
-GitHub Actions validates Python 3.12 + 3.14, Python syntax, manifest/settings contract, regression tests and smoke checks. The workflow also runs `qmllint` when that tool is present on the runner; a full QML/type check still requires the real Omarchy/Quickshell import environment. Real Quickshell/Hyprland, GPU, keyboard and systemd behavior must be verified on an actual Omarchy machine before release.
+GitHub Actions validates Python 3.12 + 3.14, Python syntax, manifest/settings contract, regression tests and smoke checks. The workflow also runs `qmllint` when that tool is present on the runner; a full QML/type check still requires the real Omarchy/Quickshell import environment. Real Quickshell/Hyprland and vendor hardware behavior must still be verified on actual Omarchy machines/community reports before claiming a specific device/backend is supported.
 
 ## License
 
