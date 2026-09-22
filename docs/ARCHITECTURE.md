@@ -6,13 +6,14 @@ Aura v1.4 freezes a layered baseline so future features can be added without des
 
 Only one executable user entrypoint exists:
 
-1. `bin/aura-cycler` — **public executable**. Loads the config foundation, then delegates to the control plane.
+1. `bin/aura-cycler` — **public executable**. Loads the config and hardware foundations, then delegates to the control plane.
 2. `bin/aura-config.py` — **import-only config foundation**. Locking, schema migration, corrupt-file recovery, conflict-aware updates, native Omarchy settings mirroring, backup/restore/reset.
-3. `bin/aura-cycler-control` — **import-only control plane**. History, favorites, scenes, diagnostics, privacy/config export, cache maintenance and theme live-sync scope.
-4. `bin/aura-cycler-runtime` — **import-only hardened runtime**. XDG paths, private config defaults, HTTPS/manual location, weather availability semantics, keyboard policy, cross-vendor GPU protection and transactional theme staging.
-5. `bin/aura-cycler-core` — **import-only retained v1.3 feature engine**. Wallpaper selection, image validation/downloads, Material You extraction, Omarchy theme generation, hardware keyboard integration and legacy helpers.
+3. `bin/aura-hardware.py` — **import-only hardware adaptation**. Multi-vendor/multi-GPU discovery, aggregate pressure semantics, desktop/laptop RGB adaptation and capability reporting.
+4. `bin/aura-cycler-control` — **import-only control plane**. History, favorites, scenes, diagnostics, privacy/config export, cache maintenance and theme live-sync scope.
+5. `bin/aura-cycler-runtime` — **import-only hardened runtime**. XDG paths, private config defaults, HTTPS/manual location, weather availability semantics, GPU protection policy and transactional theme staging.
+6. `bin/aura-cycler-core` — **import-only retained v1.3 feature engine**. Wallpaper selection, image validation/downloads, Material You extraction, Omarchy theme generation and legacy helpers.
 
-CI enforces that only `bin/aura-cycler` is executable. This prevents normal users/services from accidentally bypassing v1.4 privacy, migration or control-plane policy.
+CI enforces that only `bin/aura-cycler` is executable. This prevents normal users/services from accidentally bypassing v1.4 privacy, migration, hardware-adaptation or control-plane policy.
 
 ## Stable process identity
 
@@ -32,6 +33,16 @@ Every normal Aura process installs the same config layer before feature code exe
 - private state is written `0600`.
 
 This gives future modules one rule: **never invent a second config store; use the installed runtime config API.**
+
+## Hardware adaptation boundary
+
+Hardware-specific behavior is capability-based rather than tied to a laptop/desktop model.
+
+`aura-hardware.py` discovers all readable GPU telemetry providers and presents the existing guard API with a backward-compatible aggregate shape plus a per-GPU list. On hybrid or multi-GPU machines the aggregate pressure takes the highest VRAM percentage, utilization and temperature across all detected cards, so Auto-Protect cannot accidentally watch only the first enumerated GPU.
+
+Keyboard adaptation similarly distinguishes RGB backends from laptop brightness hardware. OpenRGB may work on a desktop keyboard even when no laptop-style keyboard backlight sysfs device exists. If a laptop backlight is manually off, that state is preserved.
+
+Unsupported sensors/backends report unavailable and must not disable Aura's core wallpaper/theme behavior. New vendor support belongs in this layer; see `docs/HARDWARE.md`.
 
 ## Native Omarchy settings
 
@@ -68,8 +79,10 @@ The bar is split deliberately:
 - `BarWidget.qml` — stable Omarchy-settings bridge;
 - `BarWidgetImpl.qml` — proven Aura bar behavior and UI.
 
+Atmospheric windows are created from `Quickshell.screens`, so monitor count/geometry are delegated to Quickshell rather than hard-coded for one display.
+
 The large existing `Panel.qml` is intentionally not structurally rewritten during the hardening release. New panel UX can be layered later after v1.4 has a verified real-system baseline.
 
 ## Future refactor boundary
 
-Do not split `aura-cycler-core` into many modules during v1.4 hardware validation. That refactor is worthwhile later, but mixing it into the hardening release would make regressions much harder to attribute. Future work should build outward from the stable public/config/control/runtime boundaries rather than bypassing them.
+Do not split `aura-cycler-core` into many modules during v1.4 hardware validation. That refactor is worthwhile later, but mixing it into the hardening release would make regressions much harder to attribute. Future work should build outward from the stable public/config/hardware/control/runtime boundaries rather than bypassing them.
