@@ -22,6 +22,7 @@ Aura is an adaptive appearance runtime for **Omarchy 4 / Quattro**: dynamic wall
 - Native Omarchy widget settings for interval, blur, weather, streaming, effects, keyboard sync and theme scope.
 - Versioned, locked, recoverable config with backup/restore/reset tooling.
 - Bounded downloads/JSON, path containment, process identity checks and owner-only private state.
+- Bounded private logs with automatic rotation so long-running sessions cannot grow the Aura log indefinitely.
 
 ## Privacy defaults
 
@@ -122,9 +123,9 @@ Scenes never enable weather or wallpaper networking implicitly.
 # Restore creates an automatic owner-only pre-restore snapshot first.
 "$PLUGIN_DIR/bin/aura-cycler" restore ~/aura-backup.json
 
-# Return to privacy-safe defaults.
-"$PLUGIN_DIR/bin/aura-cycler" reset
-"$PLUGIN_DIR/bin/aura-cycler" reset --keep-favorites --keep-folders
+# Return to privacy-safe defaults. Reset is deliberately guarded by --yes.
+"$PLUGIN_DIR/bin/aura-cycler" reset --yes
+"$PLUGIN_DIR/bin/aura-cycler" reset --yes --keep-favorites --keep-folders
 ```
 
 Backup files are `0600`. A standard backup is **not automatically safe to publish** because local paths may reveal usernames or directory names.
@@ -190,7 +191,7 @@ scripts/smoke-test.sh
 omarchy plugin validate .
 ```
 
-GitHub Actions validates Python 3.12 + 3.14, Python syntax, manifest/settings contract, regression tests, smoke checks and QML lint. Real Quickshell/Hyprland, GPU, keyboard and systemd behavior still require an actual Omarchy machine before release.
+GitHub Actions validates Python 3.12 + 3.14, Python syntax, manifest/settings contract, regression tests and smoke checks. The workflow also runs `qmllint` when that tool is present on the runner; a full QML/type check still requires the real Omarchy/Quickshell import environment. Real Quickshell/Hyprland, GPU, keyboard and systemd behavior must be verified on an actual Omarchy machine before release.
 
 ## License
 
