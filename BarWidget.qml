@@ -36,6 +36,13 @@ BarWidget {
   property int gpuUtilizationPercent: 0
   property var gpuProcesses: []
 
+  // v1.4 control-plane state exposed by status-json.
+  property string sceneName: "custom"
+  property string themeScope: "all"
+  property bool currentFavorite: false
+  property int historyCount: 0
+  property int favoritesCount: 0
+
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
 
   function injectPanel() {
@@ -137,6 +144,11 @@ BarWidget {
             root.weatherIcon = d.weather.icon
           }
           root.weatherSync = d.weather_sync
+          root.sceneName = d.scene || "custom"
+          root.themeScope = d.theme_scope || "all"
+          root.currentFavorite = !!d.favorite
+          root.historyCount = d.history_count || 0
+          root.favoritesCount = d.favorites_count || 0
           var guard = d.gpu_guard || {}
           root.gpuGuardLevel = guard.level || "unavailable"
           root.gpuGuardAutoProtect = guard.auto_protect || false
@@ -184,7 +196,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰸉"
+    text: root.currentFavorite ? "󰓎" : "󰸉"
     fontFamily: "JetBrainsMono Nerd Font"
     fontSize: 16
     horizontalMargin: 8
@@ -193,16 +205,20 @@ BarWidget {
     activeColor: root.currentAccent
     tooltipText: "Aura Material Cycler: " + (root.active ? "Active" : "Paused")
       + "\n• Rotation: " + root.intervalSec + "s"
+      + "\n• Scene: " + root.sceneName
+      + "\n• Theme Scope: " + root.themeScope
       + "\n• Outdoor Weather: " + root.weatherIcon + " " + root.weatherTemp + "°C (" + root.weatherCondition + ")"
       + "\n• Weather Sync: " + (root.weatherSync ? "Enabled (Adaptive)" : "Disabled")
       + "\n• Liquid Glass Blur: " + root.blurPx + "px"
       + "\n• Active Wallpaper: " + (root.currentWallpaper ? root.currentWallpaper : "Active")
+      + "\n• Favorite: " + (root.currentFavorite ? "Yes" : "No") + " (" + root.favoritesCount + " saved)"
+      + "\n• History: " + root.historyCount + " transitions"
       + "\n• Monet Accent: " + root.currentAccent
       + "\n• GPU Guard: " + root.gpuGuardLevel.toUpperCase()
       + (root.gpuGuardLevel === "unavailable" ? " (" + root.gpuGuardError + ")" : " • VRAM " + root.gpuVramPercent + "% • Temp " + root.gpuTemperatureC + "°C")
       + "\n• Auto-Protect: " + (root.gpuGuardAutoProtect ? "Enabled" : "Off")
       + (root.gpuGuardAuraPaused ? "\n• Aura Guard paused rotation for protection" : "")
-      + "\n\nLeft Click: Open Settings Panel (Folders, Timeout, Weather, Blur)"
+      + "\n\nLeft Click: Open Settings Panel"
       + "\nRight Click: Pause / Resume"
       + "\nMiddle Click: Cycle Speed (" + root.intervalSec + "s)"
       + "\nWheel Scroll: Fine-tune rotation timer"
