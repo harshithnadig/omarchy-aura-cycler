@@ -19,10 +19,10 @@ def load_guard():
     return module
 
 
-def test_systemd_unit_runs_external_guard():
+def test_systemd_unit_runs_public_entrypoint():
     unit = (ROOT / "systemd" / "material-cycler.service").read_text()
-    assert "ExecStart=%h/.local/libexec/omarchy/harshith.aura-cycler-service-guard" in unit
-    assert ".config/omarchy/plugins/harshith.aura-cycler/bin/aura-cycler" not in unit
+    assert "ExecStart=%h/.config/omarchy/plugins/harshith.aura-cycler/bin/aura-cycler run" in unit
+    assert ".local/libexec/omarchy/harshith.aura-cycler-service-guard" not in unit
 
 
 def test_guard_requires_owned_manifest_and_real_entrypoint():
