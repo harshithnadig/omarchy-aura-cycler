@@ -65,7 +65,7 @@ Published marketplace version:
 omarchy plugin add https://github.com/harshithnadig/omarchy-aura-cycler.git --enable
 ```
 
-The `audit-hardening-v1.4` branch remains a test branch until the real-system release checklist is complete.
+The `v1.4.0` release is served from the repository's published default branch.
 
 Aura never installs Python packages silently. Install the locked theme-analysis dependencies explicitly:
 
