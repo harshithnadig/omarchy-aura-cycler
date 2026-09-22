@@ -7,6 +7,7 @@ recovery and maintenance policy cannot be bypassed accidentally.
 
 import importlib.util
 import json
+import os
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -15,6 +16,8 @@ HERE = Path(__file__).resolve().parent
 PUBLIC_PATH = Path(__file__).resolve()
 CONTROL_PATH = HERE / "aura-cycler-control"
 CONFIG_LAYER_PATH = HERE / "aura-config.py"
+MAX_LOG_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 2
 
 
 def _load(name, path):
@@ -73,6 +76,50 @@ control.FRONT_PATH = PUBLIC_PATH
 control.runtime.WRAPPER_PATH = PUBLIC_PATH
 config_layer.install(control)
 
+
+def _install_bounded_logging(active_control):
+    """Keep Aura's private log bounded without changing the preserved engine."""
+    core = active_control.core
+    original_log = core.log
+    log_path = Path(core.LOG_FILE)
+    lock_path = log_path.with_suffix(log_path.suffix + ".lock")
+
+    def bounded_log(message):
+        lock_handle = None
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.fchmod(fd, 0o600)
+            lock_handle = os.fdopen(fd, "a+")
+            core.fcntl.flock(lock_handle.fileno(), core.fcntl.LOCK_EX)
+            if log_path.is_file() and log_path.stat().st_size >= MAX_LOG_BYTES:
+                oldest = Path(str(log_path) + f".{LOG_BACKUPS}")
+                try:
+                    oldest.unlink()
+                except FileNotFoundError:
+                    pass
+                for index in range(LOG_BACKUPS - 1, 0, -1):
+                    source = Path(str(log_path) + f".{index}")
+                    target = Path(str(log_path) + f".{index + 1}")
+                    if source.exists():
+                        os.replace(source, target)
+                os.replace(log_path, Path(str(log_path) + ".1"))
+            original_log(message)
+        except OSError:
+            original_log(message)
+        finally:
+            if lock_handle is not None:
+                try:
+                    core.fcntl.flock(lock_handle.fileno(), core.fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                lock_handle.close()
+
+    core.log = bounded_log
+
+
+_install_bounded_logging(control)
+
 # Preserve the import surface used by Aura's regression tests and existing
 # helper scripts. The public file remains small; implementation lives in the
 # control/runtime layers.
@@ -82,7 +129,14 @@ for _name in dir(control):
 
 
 def main():
-    handled = config_layer.dispatch(control, sys.argv[1:])
+    argv = sys.argv[1:]
+    if argv and argv[0] == "reset" and "--yes" not in argv[1:]:
+        print(
+            "Refusing destructive reset without --yes. "
+            "Use: aura-cycler reset --yes [--keep-favorites] [--keep-folders]"
+        )
+        return 2
+    handled = config_layer.dispatch(control, argv)
     if handled is not None:
         return handled
     return control._dispatch()
