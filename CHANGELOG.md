@@ -13,12 +13,24 @@ All notable Aura Material Cycler changes are documented here.
 - Aura config is persisted owner-only (`0600`) because it may contain location data.
 - Added privacy status and redacted-by-default config export; manual coordinates are only shown with explicit private/full output.
 
+### Stable configuration foundation
+- Added schema-versioned main config (`config_version: 2`) with explicit/idempotent migrations.
+- Added an owner-only process lock for config writes.
+- Added conflict-aware stale-save merging so unrelated concurrent Aura updates are preserved rather than silently overwritten.
+- Malformed config JSON is preserved as `aura-cycler-config.corrupt-<timestamp>.json` before Aura recovers privacy-safe defaults.
+- Added native Omarchy `barWidget.defaults` + `barWidget.schema` for interval, blur, weather, streaming, effects, keyboard sync and theme scope.
+- Added a bidirectional native-settings bridge through the supported Omarchy `setBarWidget` IPC.
+- Existing v1.3 preferences are protected from untouched v1.4 manifest defaults during first migration.
+- Added owner-only `backup`, `restore` and `reset`; restore creates a pre-restore safety snapshot and normal backups redact private location/weather state.
+
 ### Reliability
-- Preserved the v1.3 engine as `bin/aura-cycler-core`, moved hardening into `bin/aura-cycler-runtime`, and made `bin/aura-cycler` the small public control plane.
+- Preserved the v1.3 engine as `bin/aura-cycler-core`, moved hardening into `bin/aura-cycler-runtime`, kept user-facing features in `bin/aura-cycler-control`, and made `bin/aura-cycler` the only executable public entrypoint.
+- Added import-only `bin/aura-config.py` so every normal Aura invocation installs the same config/migration/recovery policy before feature code runs.
 - Corrected theme staging rollback so a failed `omarchy-theme-set-templates` run restores the previous staging directory.
 - Added XDG-aware Aura-owned state/cache/config paths while retaining compatibility with the standard Omarchy layout.
 - Added migration for the previous state-file location.
 - Added read-only `doctor` diagnostics and repository smoke checks.
+- CI enforces that internal core/runtime/control/config layers are not executable.
 
 ### Wallpaper workflow
 - Added owner-only wallpaper history capped at 100 transitions with consecutive duplicate collapse.
@@ -43,8 +55,11 @@ All notable Aura Material Cycler changes are documented here.
 
 ### Plugin quality
 - Marked the bar widget `allowMultiple: false`.
-- Added GitHub Actions CI covering dependency install, syntax, manifest validation, regression tests, smoke checks and QML lint where available.
+- Split the bar into `BarWidget.qml` (native-settings bridge) and `BarWidgetImpl.qml` (proven UI/behavior).
+- GitHub Actions now validates the locked dependency set on Python 3.12 and Python 3.14.
+- CI covers Python syntax, manifest/settings contract, regression tests, repository smoke checks and QML lint where available.
 - Added runtime privacy/regression tests plus control-plane tests for history, favorites, scenes, theme scopes, diagnostics and cache boundaries.
+- Added dedicated regression tests for config migration, corruption recovery, concurrent stale-save merging, native settings bounds, backup permissions/redaction, restore safety snapshots and migration-default preservation.
 - Added `SECURITY.md`, `CONTRIBUTING.md`, release checklist, architecture/privacy/testing docs, issue templates and PR template.
 - Added a focused Codex real-system verification packet so hardware/QML fixes are based on reproduction rather than guesses.
 
