@@ -20,7 +20,7 @@ body:
     id: doctor
     attributes:
       label: Aura doctor output
-      description: Paste `bin/aura-cycler doctor` output. Remove anything you consider private.
+      description: Paste `bin/aura-cycler doctor` output. Review/redact any local paths you consider private before posting.
       render: text
   - type: input
     id: omarchy
@@ -30,8 +30,13 @@ body:
     id: gpu
     attributes:
       label: GPU / driver
+  - type: input
+    id: keyboard
+    attributes:
+      label: Keyboard / RGB hardware
   - type: textarea
     id: logs
     attributes:
       label: Relevant logs
+      description: Review local file paths/location information before posting publicly.
       render: text
