@@ -196,7 +196,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.currentFavorite ? "󰓎" : "󰸉"
+    text: "󰸉"
     fontFamily: "JetBrainsMono Nerd Font"
     fontSize: 16
     horizontalMargin: 8
