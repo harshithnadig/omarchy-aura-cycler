@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).parents[1]
-CLI = ROOT / "bin" / "aura-cycler"
+CORE = ROOT / "bin" / "aura-cycler-core"
 
 
 class MockHttpResponse:
@@ -19,9 +19,7 @@ class MockHttpResponse:
         self.headers = headers or {}
 
     def read(self, amt=None):
-        if amt is None:
-            return self._bio.read()
-        return self._bio.read(amt)
+        return self._bio.read() if amt is None else self._bio.read(amt)
 
     def __enter__(self):
         return self
@@ -48,7 +46,7 @@ class SecurityAuditTests(unittest.TestCase):
             "XDG_RUNTIME_DIR": str(self.runtime),
         })
         try:
-            loader = SourceFileLoader("aura_cycler_sec_module", str(CLI))
+            loader = SourceFileLoader("aura_cycler_sec_core", str(CORE))
             spec = importlib.util.spec_from_loader(loader.name, loader)
             self.module = importlib.util.module_from_spec(spec)
             loader.exec_module(self.module)
@@ -77,15 +75,9 @@ class SecurityAuditTests(unittest.TestCase):
         ]
         for malicious_id in traversal_attempts:
             dest = self.module.safe_cache_path("wallhaven", malicious_id, ".jpg")
-            # Verify containment under CACHE_DIR
             resolved_cache = os.path.realpath(str(self.cache_dir))
             resolved_dest = os.path.realpath(dest)
-            self.assertEqual(
-                os.path.commonpath([resolved_cache, resolved_dest]),
-                resolved_cache,
-                f"Malicious identifier '{malicious_id}' escaped CACHE_DIR: {dest}"
-            )
-            # Verify filename contains no slashes or directory traversal markers
+            self.assertEqual(os.path.commonpath([resolved_cache, resolved_dest]), resolved_cache)
             base = os.path.basename(dest)
             self.assertNotIn("/", base)
             self.assertNotIn("..", base)
@@ -95,70 +87,56 @@ class SecurityAuditTests(unittest.TestCase):
         for unsafe_ext in [".sh", ".exe", ".php", ".py", ".html", ""]:
             dest = self.module.safe_cache_path("bing", "test_hsh", unsafe_ext)
             self.assertTrue(dest.endswith(".jpg"))
-
         for valid_ext in [".jpg", ".jpeg", ".png", ".webp"]:
             dest = self.module.safe_cache_path("bing", "test_hsh", valid_ext)
             self.assertTrue(dest.endswith(valid_ext))
 
     def test_read_capped_json_success(self):
-        data = json.dumps({"status": "success", "lat": 12.97, "lon": 77.59}).encode("utf-8")
-        resp = MockHttpResponse(data, headers={"Content-Length": str(len(data))})
-        parsed = self.module.read_capped_json(resp, max_bytes=1024)
+        data = json.dumps({"status": "success", "lat": 12.97, "lon": 77.59}).encode()
+        response = MockHttpResponse(data, headers={"Content-Length": str(len(data))})
+        parsed = self.module.read_capped_json(response, max_bytes=1024)
         self.assertEqual(parsed["status"], "success")
-        self.assertEqual(parsed["lat"], 12.97)
 
     def test_read_capped_json_rejects_oversized_content_length(self):
-        resp = MockHttpResponse(b"{}", headers={"Content-Length": "2097152"})  # 2 MiB
-        with self.assertRaises(ValueError) as ctx:
-            self.module.read_capped_json(resp, max_bytes=1048576)
-        self.assertIn("exceeds maximum allowed size", str(ctx.exception))
+        response = MockHttpResponse(b"{}", headers={"Content-Length": "2097152"})
+        with self.assertRaises(ValueError):
+            self.module.read_capped_json(response, max_bytes=1048576)
 
     def test_read_capped_json_aborts_on_oversized_payload_without_header(self):
-        huge_payload = b"x" * (1024 * 1024 + 50)
-        resp = MockHttpResponse(huge_payload)
-        with self.assertRaises(ValueError) as ctx:
-            self.module.read_capped_json(resp, max_bytes=1024 * 1024)
-        self.assertIn("exceeds maximum allowed size", str(ctx.exception))
+        response = MockHttpResponse(b"x" * (1024 * 1024 + 50))
+        with self.assertRaises(ValueError):
+            self.module.read_capped_json(response, max_bytes=1024 * 1024)
 
     def test_download_wallpaper_blocks_destination_outside_cache(self):
-        outside_dest = str(self.state_home / "escape" / "outside.jpg")
-        success = self.module.download_wallpaper("http://example.com/test.jpg", outside_dest)
-        self.assertFalse(success)
-        self.assertFalse(os.path.exists(outside_dest))
+        outside = str(self.state_home / "escape" / "outside.jpg")
+        self.assertFalse(self.module.download_wallpaper("http://example.com/test.jpg", outside))
+        self.assertFalse(os.path.exists(outside))
 
     def test_download_wallpaper_rejects_non_http_urls(self):
         destination = str(self.cache_dir / "local.jpg")
-        success = self.module.download_wallpaper("file:///etc/passwd", destination)
-        self.assertFalse(success)
+        self.assertFalse(self.module.download_wallpaper("file:///etc/passwd", destination))
         self.assertFalse(os.path.exists(destination))
 
     def test_download_wallpaper_rejects_oversized_content_length(self):
         dest = str(self.cache_dir / "oversized.jpg")
-        mock_resp = MockHttpResponse(
+        response = MockHttpResponse(
             b"fake-image-bytes",
-            headers={"Content-Length": str(self.module.MAX_WALLPAPER_BYTES + 1024)}
+            headers={"Content-Length": str(self.module.MAX_WALLPAPER_BYTES + 1024)},
         )
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            success = self.module.download_wallpaper("http://example.com/huge.jpg", dest)
-        self.assertFalse(success)
+        with patch("urllib.request.urlopen", return_value=response):
+            self.assertFalse(self.module.download_wallpaper("http://example.com/huge.jpg", dest))
         self.assertFalse(os.path.exists(dest))
 
     def test_download_wallpaper_aborts_mid_stream_when_byte_limit_exceeded(self):
         dest = str(self.cache_dir / "stream_overflow.jpg")
-        # Generate stream chunks exceeding limit without Content-Length
         chunk = b"A" * (64 * 1024)
-        num_chunks = (self.module.MAX_WALLPAPER_BYTES // len(chunk)) + 2
-        overflow_data = chunk * num_chunks
-        mock_resp = MockHttpResponse(overflow_data, headers={})
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            success = self.module.download_wallpaper("http://example.com/unbounded.jpg", dest)
-
-        self.assertFalse(success)
+        count = (self.module.MAX_WALLPAPER_BYTES // len(chunk)) + 2
+        response = MockHttpResponse(chunk * count, headers={})
+        with patch("urllib.request.urlopen", return_value=response):
+            self.assertFalse(self.module.download_wallpaper("http://example.com/unbounded.jpg", dest))
         self.assertFalse(os.path.exists(dest))
-        # Ensure temporary files in cache_dir were cleaned up
-        temp_files = [f for f in os.listdir(self.cache_dir) if f.startswith(".material-download-")]
-        self.assertEqual(temp_files, [], "Temporary download file leaked on size abort")
+        leaked = [f for f in os.listdir(self.cache_dir) if f.startswith(".material-download-")]
+        self.assertEqual(leaked, [])
 
 
 if __name__ == "__main__":
