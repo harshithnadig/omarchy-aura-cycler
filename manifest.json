@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "harshith.aura-cycler",
   "name": "Aura Material Cycler",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "author": "Aura Project Contributors",
   "license": "MIT",
   "description": "Adaptive Omarchy appearance runtime with Material You palettes, opt-in live weather, atmospheric effects, ambient keyboard lighting, and cross-vendor GPU-aware protection.",

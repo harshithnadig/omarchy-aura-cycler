@@ -24,7 +24,7 @@ from pathlib import Path
 FRONT_PATH = Path(__file__).resolve()
 HERE = FRONT_PATH.parent
 RUNTIME_PATH = HERE / "aura-cycler-runtime"
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 if not RUNTIME_PATH.is_file():
     raise SystemExit(f"Aura runtime is missing: {RUNTIME_PATH}")
