@@ -2,6 +2,11 @@
 
 All notable Aura Material Cycler changes are documented here.
 
+## [1.4.3] - 2026-09-26
+
+### Fixed
+- Preserve stateful Omarchy bar widgets during wallpaper rotation by applying palette colors through the background transition without triggering a full shell plugin reload.
+
 ## [1.4.2] - 2026-09-26
 
 ### Fixed
