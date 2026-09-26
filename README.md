@@ -65,7 +65,15 @@ Published marketplace version:
 omarchy plugin add https://github.com/harshithnadig/omarchy-aura-cycler.git --enable
 ```
 
-The `v1.4.0` release is served from the repository's published default branch.
+The `v1.4.1` release is served from the repository's published default branch.
+
+To update an existing installation and reload the supervised service unit:
+
+```bash
+omarchy plugin update harshith.aura-cycler
+systemctl --user daemon-reload
+systemctl --user restart material-cycler.service
+```
 
 Aura never installs Python packages silently. Install the locked theme-analysis dependencies explicitly:
 

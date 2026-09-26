@@ -9,7 +9,7 @@ ExecStart=%h/.config/omarchy/plugins/harshith.aura-cycler/bin/aura-cycler run
 Restart=on-failure
 RestartSec=10
 Nice=10
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/omarchy/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=graphical-session.target default.target

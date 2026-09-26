@@ -2,6 +2,13 @@
 
 All notable Aura Material Cycler changes are documented here.
 
+## [1.4.1] - 2026-09-26
+
+### Fixed
+- Apply rotated images through Omarchy's public wallpaper setter so the persistent background and live desktop stay in sync.
+- Log wallpaper setter and shell IPC failures instead of silently hiding them.
+- Include Omarchy's `bin` directory in the supervised service `PATH` so the setter resolves when Aura runs under systemd.
+
 ## [1.4.0] - 2026-09-22
 
 ### Privacy and networking
