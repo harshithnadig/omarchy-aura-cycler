@@ -24,7 +24,7 @@ from pathlib import Path
 FRONT_PATH = Path(__file__).resolve()
 HERE = FRONT_PATH.parent
 RUNTIME_PATH = HERE / "aura-cycler-runtime"
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 if not RUNTIME_PATH.is_file():
     raise SystemExit(f"Aura runtime is missing: {RUNTIME_PATH}")
@@ -502,13 +502,14 @@ def _doctor_checks():
     for binary in ("omarchy-shell", "omarchy-theme-set-templates"):
         found = shutil.which(binary)
         add(f"command:{binary}", bool(found), found or "not found")
+    # Loading performs privacy-permission repair before the check below.
+    cfg = runtime.load_config()
     cfg_path = Path(core.CONFIG_FILE)
     if cfg_path.exists():
         mode = cfg_path.stat().st_mode & 0o777
         add("config-permissions", mode == 0o600, oct(mode), "warn")
     else:
         add("config-permissions", True, "not created yet")
-    cfg = runtime.load_config()
     add("location-mode", cfg.get("location_mode") in {"off", "auto", "manual"}, cfg.get("location_mode"))
     add("theme-scope", _theme_scope() in VALID_THEME_SCOPES, _theme_scope())
     wallpaper = _current_wallpaper()

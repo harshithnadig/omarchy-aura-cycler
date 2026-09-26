@@ -111,6 +111,48 @@ def test_migrates_and_owner_only(tmp_path, monkeypatch):
     assert stat.S_IMODE(Path(control.core.CONFIG_FILE).stat().st_mode) == 0o600
 
 
+def test_existing_private_config_permissions_are_repaired_before_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_DISABLE_SHELL_SETTINGS_SYNC", "1")
+    layer = load_layer("aura_config_permissions")
+    control = make_control(tmp_path)
+    config_path = Path(control.core.CONFIG_FILE)
+    config_path.write_text(json.dumps({
+        "config_version": 2,
+        "interval": 75,
+        "location_mode": "manual",
+        "manual_location": {"lat": 12.97, "lon": 77.59, "city": "Bengaluru"},
+    }))
+    config_path.chmod(0o644)
+
+    layer.install(control)
+    cfg = control.runtime.load_config()
+
+    assert cfg["interval"] == 75
+    assert cfg["manual_location"]["lat"] == 12.97
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_symlink_config_is_quarantined_without_reading_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_DISABLE_SHELL_SETTINGS_SYNC", "1")
+    layer = load_layer("aura_config_symlink")
+    control = make_control(tmp_path)
+    config_path = Path(control.core.CONFIG_FILE)
+    target = tmp_path / "outside.json"
+    target.write_text(json.dumps({"config_version": 2, "interval": 777}))
+    config_path.symlink_to(target)
+
+    layer.install(control)
+    cfg = control.runtime.load_config()
+
+    assert cfg["interval"] == 300
+    assert not config_path.is_symlink()
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+    quarantined = list(config_path.parent.glob("aura-cycler-config.unsafe-*.json"))
+    assert len(quarantined) == 1
+    assert quarantined[0].is_symlink()
+    assert target.read_text() == json.dumps({"config_version": 2, "interval": 777})
+
+
 def test_corrupt_config_is_preserved_and_recovered(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_DISABLE_SHELL_SETTINGS_SYNC", "1")
     layer = load_layer("aura_config_corrupt")

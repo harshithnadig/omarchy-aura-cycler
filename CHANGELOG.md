@@ -2,6 +2,12 @@
 
 All notable Aura Material Cycler changes are documented here.
 
+## [1.4.2] - 2026-09-26
+
+### Fixed
+- Repair existing Aura config permissions to owner-only before reading private settings, and quarantine symlink or non-owner config paths safely.
+- Keep empty KMeans color clusters aligned with their centers so low-color wallpapers no longer fail offline palette extraction.
+
 ## [1.4.1] - 2026-09-26
 
 ### Fixed
