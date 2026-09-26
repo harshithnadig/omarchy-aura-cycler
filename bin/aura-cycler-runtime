@@ -727,7 +727,7 @@ def status_json():
         guard = core.gpu_guard_status(apply_protection=True)
 
     payload = {
-        "runtime_version": "1.4.1",
+        "runtime_version": "1.4.2",
         "active": active,
         "interval": cfg.get("interval", 300),
         "blur": cfg.get("blur", 12),

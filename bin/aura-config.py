@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -152,6 +153,31 @@ def install(control):
     lock_path = Path(runtime.XDG_RUNTIME_DIR) / "aura-cycler-config.lock"
     config_path = Path(core.CONFIG_FILE)
 
+    def protect_config_file():
+        """Keep private settings owner-only before any existing file is read."""
+        try:
+            info = config_path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise OSError(f"Cannot inspect Aura config file: {error}") from error
+
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            quarantined = config_path.with_name(
+                f"{config_path.stem}.unsafe-{_stamp()}-{os.getpid()}{config_path.suffix}"
+            )
+            try:
+                os.replace(config_path, quarantined)
+            except OSError as error:
+                raise OSError(f"Cannot quarantine unsafe Aura config file: {error}") from error
+            core.log(f"Quarantined unsafe Aura config file at {quarantined}")
+            return
+
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o600:
+            os.chmod(config_path, 0o600, follow_symlinks=False)
+            core.log(f"Restricted Aura config permissions from {oct(mode)} to 0o600")
+
     @contextlib.contextmanager
     def locked(exclusive=True):
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,6 +225,7 @@ def install(control):
     def load_config():
         global _LAST_SNAPSHOT
         with locked(True):
+            protect_config_file()
             recover_corrupt_locked()
             cfg = original_load()
             cfg, changed = migrate_locked(cfg)

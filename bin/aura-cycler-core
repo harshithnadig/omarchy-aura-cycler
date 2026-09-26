@@ -1273,7 +1273,10 @@ def extract_focal_colors_offline(image_path):
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
         kmeans.fit(vibrant_pixels)
         
-        counts = np.bincount(kmeans.labels_)
+        # KMeans keeps all requested centers even when the image has fewer
+        # distinct colors, leaving some centers empty. Preserve zero counts
+        # for those centers so indexing stays aligned with cluster_centers_.
+        counts = np.bincount(kmeans.labels_, minlength=len(kmeans.cluster_centers_))
         best_score = -1
         best_color = kmeans.cluster_centers_[0]
         
