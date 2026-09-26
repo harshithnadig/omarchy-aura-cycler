@@ -1559,7 +1559,10 @@ def apply_next_wallpaper():
     generated = regenerate_derived_theme_files(colors_raw)
     write_palette_state(chosen, accent_hex, palette, generated)
 
-    # 5. Apply complete theme and background transition live to Omarchy shell
+    # 5. Apply wallpaper and colors to Omarchy's live shell.
+    # shell.applyTheme is intentionally not used here: Omarchy implements it
+    # by reloading every shell plugin widget. That resets stateful widgets
+    # (for example, network-speed sampling history) on every wallpaper cycle.
     if colors_raw:
         try:
             b64 = base64.b64encode(colors_raw.encode()).decode()
@@ -1570,10 +1573,6 @@ def apply_next_wallpaper():
                     shell_raw = f.read()
             shell_b64 = base64.b64encode(shell_raw.encode()).decode()
             subprocess.run(["omarchy-shell", "-q", "background", "themeTransition", "", chosen, chosen, b64, shell_b64],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            subprocess.run(["omarchy-shell", "-q", "background", "set", chosen],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            subprocess.run(["omarchy-shell", "-q", "shell", "applyTheme", b64, shell_b64],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
         except Exception:
             pass
