@@ -1520,17 +1520,27 @@ def apply_next_wallpaper():
 
     log(f"=== Applying New Wallpaper: {os.path.basename(chosen)} ===")
 
-    # 3. Apply wallpaper atomically by updating Omarchy background symlink
-    current_bg_link = os.path.expanduser("~/.local/state/omarchy/current/background")
+    # 3. Ask Omarchy's public setter to persist and show the wallpaper. This
+    # keeps its current/background link and the running shell in sync.
     try:
-        os.makedirs(os.path.dirname(current_bg_link), exist_ok=True)
-        tmp_link = current_bg_link + ".tmp"
-        if os.path.lexists(tmp_link):
-            os.unlink(tmp_link)
-        os.symlink(chosen, tmp_link)
-        os.replace(tmp_link, current_bg_link)
-    except Exception as e:
-        log(f"Background symlink error: {e}")
+        result = subprocess.run(
+            ["omarchy-theme-bg-set", chosen],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout).strip() or "no details"
+            log(f"Omarchy wallpaper setter failed (exit {result.returncode}): {details}")
+        # The helper uses Omarchy's quiet IPC mode. Verify the live shell call
+        # separately without quiet mode so shell errors cannot be hidden.
+        live_result = subprocess.run(
+            ["omarchy-shell", "background", "set", chosen],
+            capture_output=True, text=True, timeout=5,
+        )
+        if live_result.returncode != 0:
+            live_details = (live_result.stderr or live_result.stdout).strip() or "no details"
+            log(f"Omarchy shell wallpaper IPC failed (exit {live_result.returncode}): {live_details}")
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"Omarchy wallpaper apply error: {e}")
 
     # 4. Extract focal colors and complete Material You palette via offline ML model
     focal_accent, palette = extract_focal_colors_offline(chosen)
