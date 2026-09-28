@@ -53,6 +53,9 @@ def test_aggregate_multi_gpu_uses_worst_pressure():
     assert aggregate["utilization_percent"] == 94
     assert aggregate["temperature_c"] == 89
     assert len(aggregate["gpus"]) == 2
+    assert [gpu["name"] for gpu in aggregate["gpus"]] == ["Intel iGPU", "AMD dGPU"]
+    assert aggregate["gpus"][1]["used_mib"] == 7200
+    assert aggregate["gpus"][1]["total_mib"] == 8000
 
 
 def test_drm_scan_does_not_stop_at_first_gpu(tmp_path):

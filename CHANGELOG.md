@@ -2,6 +2,12 @@
 
 All notable Aura Material Cycler changes are documented here.
 
+## [Unreleased]
+
+### Improved
+- Show each detected GPU model and its available VRAM, load, temperature, and power metrics in the performance guard panel and bar tooltip on multi-GPU systems.
+- Clear stale GPU readings when telemetry becomes unavailable.
+
 ## [1.4.3] - 2026-09-26
 
 ### Fixed

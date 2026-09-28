@@ -34,6 +34,8 @@ BarWidget {
   property real gpuVramPercent: 0
   property int gpuTemperatureC: 0
   property int gpuUtilizationPercent: 0
+  property real gpuPowerDrawW: 0
+  property var gpuDevices: []
   property var gpuProcesses: []
 
   // v1.4 control-plane state exposed by status-json.
@@ -113,6 +115,26 @@ BarWidget {
     if (!guardProc.running) guardProc.running = true
   }
 
+  function gpuDeviceTooltip() {
+    var lines = []
+    for (var i = 0; i < root.gpuDevices.length; i++) {
+      var device = root.gpuDevices[i] || {}
+      var details = []
+      if (Number(device.total_mib) > 0) {
+        details.push("VRAM " + (device.vram_percent || 0) + "% "
+          + (device.used_mib || 0) + "/" + device.total_mib + " MiB")
+      } else {
+        details.push("VRAM unavailable")
+      }
+      details.push("Load " + (device.utilization_percent || 0) + "%")
+      details.push("Temp " + (device.temperature_c || 0) + "°C")
+      if (Number(device.power_draw_w) > 0)
+        details.push("Power " + device.power_draw_w + " W")
+      lines.push("   • " + (device.name || ("GPU " + (i + 1))) + " — " + details.join(" • "))
+    }
+    return lines.length > 0 ? "\n• Detected GPU hardware:\n" + lines.join("\n") : ""
+  }
+
   Timer {
     interval: root.opened ? 3000 : 10000
     running: true
@@ -162,6 +184,19 @@ BarWidget {
             root.gpuVramPercent = guard.metrics.vram_percent || 0
             root.gpuTemperatureC = guard.metrics.temperature_c || 0
             root.gpuUtilizationPercent = guard.metrics.utilization_percent || 0
+            root.gpuPowerDrawW = guard.metrics.power_draw_w || 0
+            root.gpuDevices = Array.isArray(guard.metrics.gpus) && guard.metrics.gpus.length > 0
+              ? guard.metrics.gpus
+              : [guard.metrics]
+          } else {
+            root.gpuGuardName = "GPU unavailable"
+            root.gpuVramUsedMib = 0
+            root.gpuVramTotalMib = 0
+            root.gpuVramPercent = 0
+            root.gpuTemperatureC = 0
+            root.gpuUtilizationPercent = 0
+            root.gpuPowerDrawW = 0
+            root.gpuDevices = []
           }
         } catch(e) {}
       }
@@ -215,7 +250,9 @@ BarWidget {
       + "\n• History: " + root.historyCount + " transitions"
       + "\n• Monet Accent: " + root.currentAccent
       + "\n• GPU Guard: " + root.gpuGuardLevel.toUpperCase()
-      + (root.gpuGuardLevel === "unavailable" ? " (" + root.gpuGuardError + ")" : " • VRAM " + root.gpuVramPercent + "% • Temp " + root.gpuTemperatureC + "°C")
+      + (root.gpuGuardLevel === "unavailable" ? " (" + root.gpuGuardError + ")" : " • " + root.gpuGuardName + " • VRAM " + root.gpuVramPercent + "% • Load " + root.gpuUtilizationPercent + "% • Temp " + root.gpuTemperatureC + "°C")
+      + (root.gpuGuardLevel !== "unavailable" && root.gpuPowerDrawW > 0 ? " • Power " + root.gpuPowerDrawW + " W" : "")
+      + root.gpuDeviceTooltip()
       + "\n• Auto-Protect: " + (root.gpuGuardAutoProtect ? "Enabled" : "Off")
       + (root.gpuGuardAuraPaused ? "\n• Aura Guard paused rotation for protection" : "")
       + "\n\nLeft Click: Open Settings Panel"
