@@ -51,6 +51,6 @@ Before tagging a new Aura release:
 - [ ] Marketplace security-sensitive capability changes reviewed.
 - [ ] Draft PR checklist is fully green and the PR is marked ready only after real-system verification.
 - [ ] Merge to `master` only after all required gates above pass.
-- [ ] Create/tag `v1.4.0` from the verified merge commit.
-- [ ] Create GitHub Release from the v1.4.0 changelog.
+- [ ] Create/tag the next semantic version from the verified merge commit.
+- [ ] Create GitHub Release from that version's changelog.
 - [ ] Re-submit/revalidate the exact release commit in the Omarchy marketplace if required.
