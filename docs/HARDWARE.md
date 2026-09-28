@@ -28,6 +28,8 @@ This is a portability contract, not a promise that every vendor exposes every se
 
 On multi-GPU systems Aura keeps a per-GPU list and exposes aggregate pressure using the **highest VRAM percentage, utilization and temperature across all detected GPUs**. Auto-Protect therefore cannot accidentally monitor only `card0` while a different dGPU is under pressure.
 
+The GPU Performance Guard panel shows the detected GPU model and aggregate VRAM, load, temperature, and power readings when available. On multi-GPU systems it also lists each detected GPU with its own model and available metrics; the bar tooltip includes the same per-device details. Unavailable metrics are labeled instead of being presented as measurements.
+
 If no usable telemetry backend exists, GPU monitoring reports unavailable and Auto-Protect does nothing. Core Aura behavior is unaffected.
 
 Use:

@@ -56,6 +56,8 @@ Panel {
   property real gpuVramPercent: 0
   property int gpuTemperatureC: 0
   property int gpuUtilizationPercent: 0
+  property real gpuPowerDrawW: 0
+  property var gpuDevices: []
   property var gpuProcesses: []
 
   readonly property color fg: bar ? bar.foreground : Color.popups.text
@@ -144,6 +146,19 @@ Panel {
             root.gpuVramPercent = guard.metrics.vram_percent || 0
             root.gpuTemperatureC = guard.metrics.temperature_c || 0
             root.gpuUtilizationPercent = guard.metrics.utilization_percent || 0
+            root.gpuPowerDrawW = guard.metrics.power_draw_w || 0
+            root.gpuDevices = Array.isArray(guard.metrics.gpus) && guard.metrics.gpus.length > 0
+              ? guard.metrics.gpus
+              : [guard.metrics]
+          } else {
+            root.gpuGuardName = "GPU unavailable"
+            root.gpuVramUsedMib = 0
+            root.gpuVramTotalMib = 0
+            root.gpuVramPercent = 0
+            root.gpuTemperatureC = 0
+            root.gpuUtilizationPercent = 0
+            root.gpuPowerDrawW = 0
+            root.gpuDevices = []
           }
         } catch(e) {}
       }
@@ -341,6 +356,45 @@ Panel {
                 color: root.fg
                 font.family: root.fontFam
                 font.pixelSize: Style.font.caption
+              }
+              Text {
+                textFormat: Text.PlainText
+                text: root.gpuGuardLevel === "unavailable"
+                  ? "Power —"
+                  : (root.gpuPowerDrawW > 0 ? ("Power " + root.gpuPowerDrawW + " W") : "Power unavailable")
+                color: root.fg
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Repeater {
+              model: root.gpuDevices.length > 1 ? root.gpuDevices : []
+              delegate: Text {
+                required property var modelData
+                required property int index
+                width: guardColumn.width
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.muted
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+                text: {
+                  var device = modelData || {}
+                  var label = device.name || ("GPU " + (index + 1))
+                  var details = []
+                  if (Number(device.total_mib) > 0) {
+                    details.push("VRAM " + (device.vram_percent || 0) + "% "
+                      + (device.used_mib || 0) + "/" + device.total_mib + " MiB")
+                  } else {
+                    details.push("VRAM unavailable")
+                  }
+                  details.push("Load " + (device.utilization_percent || 0) + "%")
+                  details.push("Temp " + (device.temperature_c || 0) + "°C")
+                  if (Number(device.power_draw_w) > 0)
+                    details.push("Power " + device.power_draw_w + " W")
+                  return label + " • " + details.join(" • ")
+                }
               }
             }
 
